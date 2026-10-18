@@ -45,13 +45,13 @@ Copy-Item -Recurse dsh-quick-restart "$env:USERPROFILE\.dsh\profiles\desktop\nod
 
 ```
 Client (web)  ──POST /quick-restart/api/restart──▶  Node 半进程 (cordis 插件, Host 子进程)
-                                                        │ 写 launcher.cmd + spawn PowerShell
-                                                        ▼
-                                              WMI Win32_Process.Create
-                                                        │ 父进程改为 WmiPrvSE.exe
-                                                        ▼
-                                              restart-helper.cjs（Electron exe 以 Node 模式运行）
-                                              强杀全部应用进程 → spawn(detached) 重启 exe
+                                                         │ 写 launcher.cmd + spawn PowerShell
+                                                         ▼
+                                               WMI Win32_Process.Create
+                                                         │ 父进程改为 WmiPrvSE.exe
+                                                         ▼
+                                               restart-helper.cjs（Electron exe 以 Node 模式运行）
+                                               强杀全部应用进程 → spawn(detached) 重启 exe
 ```
 
 几个实测得出的关键设计（详细原因见源码注释）：
@@ -82,8 +82,8 @@ Client (web)  ──POST /quick-restart/api/restart──▶  Node 半进程 (co
 HTTP 接口（POST）：
 
 - `/quick-restart/api/restart` — 触发重启（body `{"dryRun":true}` 可演练）
-- `/quick-restart/api/status` — 状态（exe 路径、helper 是否存在等）
-- `/quick-restart/api/logs` — 日志尾部
+- `/quick-restart/api/status` — 触发重启（body `{"dryRun":true}` 可演练）
+- `/quick-restart/api/logs` — 上述日志的尾部
 
 ## 已知限制
 
