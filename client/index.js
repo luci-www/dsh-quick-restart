@@ -80,7 +80,7 @@ window.__ModuleLoader__.load({
 			".dshQuickRestartGhost:disabled,.dshQuickRestartPrimary:disabled{opacity:.55;cursor:default}",
 			".dshQuickRestartSpin{animation:dshQuickRestartSpin 1s linear infinite}",
 			"@keyframes dshQuickRestartSpin{to{transform:rotate(360deg)}}",
-		].join("\\n");
+		].join("\n");
 
 		function installStyles() {
 			if (document.getElementById(STYLE_ID) !== null) return () => {};
@@ -121,7 +121,7 @@ window.__ModuleLoader__.load({
 							const detail =
 								parsed && parsed.error && parsed.error.message
 									? parsed.error.message
-								: "HTTP " + response.status;
+									: "HTTP " + response.status;
 							throw new Error(detail);
 						}
 						return parsed.value;
@@ -137,7 +137,7 @@ window.__ModuleLoader__.load({
 				const digits = hex[1].length === 3 ? hex[1].split("").map((d) => d + d).join("") : hex[1];
 				return [0, 2, 4].map((offset) => Number.parseInt(digits.slice(offset, offset + 2), 16));
 			}
-			const fn = /^rgba?\(\\s*([0-9.]+)[,\\s]+([0-9.]+)[,\\s]+([0-9.]+)/u.exec(value);
+			const fn = /^rgba?\(\s*([0-9.]+)[,\s]+([0-9.]+)[,\s]+([0-9.]+)/u.exec(value);
 			if (fn !== null) return [Number(fn[1]), Number(fn[2]), Number(fn[3])];
 			return null;
 		}
@@ -278,7 +278,7 @@ window.__ModuleLoader__.load({
 						const confirmed =
 							typeof window.confirm !== "function" ||
 							window.confirm(
-								"重启 DeepSeek Harness？\\n应用会关闭并自动重新打开，正在进行的回答会被中断。",
+								"重启 DeepSeek Harness？\n应用会关闭并自动重新打开，正在进行的回答会被中断。",
 							);
 						if (confirmed) api.confirm();
 						return;
@@ -305,7 +305,7 @@ window.__ModuleLoader__.load({
 								stuckTimer = null;
 								if (state.phase !== "armed") return;
 								// Still alive: let the user try again instead of lying.
-							api.patch({
+								api.patch({
 									phase: "stuck",
 									message: "应用似乎仍在运行。可以再点一次「立即重启」，或手动重启应用。",
 								});
@@ -431,8 +431,8 @@ window.__ModuleLoader__.load({
 							background: palette.card,
 							color: palette.text,
 							// Belt and braces: an explicit paint colour for the glyphs
-							// themselves, so no inherited `color`/`text-fill-color`
-							// rule can blank the text out, and a matching color-scheme so
+							// themselves, so no inherited `color`/`text-fill-color` rule
+							// can blank the text out, and a matching color-scheme so
 							// native bits (caret, selection) follow the card.
 							WebkitTextFillColor: palette.text,
 							colorScheme: palette.dark ? "dark" : "light",
@@ -492,6 +492,7 @@ window.__ModuleLoader__.load({
 							React.createElement(RestartIcon, { size: 14, spin: state.phase === "arming" }),
 							state.phase === "arming" ? "正在重启…" : state.phase === "stuck" ? "重试重启" : "立即重启",
 						),
+					),
 				),
 			);
 		}
@@ -521,29 +522,29 @@ window.__ModuleLoader__.load({
 				if (event === null || event === undefined) return;
 				if (typeof event.stopPropagation === "function") event.stopPropagation();
 				if (typeof event.preventDefault === "function") event.preventDefault();
-				};
-				return React.createElement(
-					React.Fragment,
-					null,
-					React.createElement(brandWordmark, { includeMark: false, className: "dshQuickRestartBrandArt" }),
-					React.createElement(
-						"button",
-						{
-							type: "button",
-							className: "dshQuickRestartBrandBtn",
-							title: "一键重启 DeepSeek Harness",
-							"aria-label": "一键重启 DeepSeek Harness",
-							tabIndex: -1,
-							onPointerDown: swallow,
-							onMouseDown: swallow,
-							onClick: (event) => {
-								swallow(event);
-								store.open();
-							},
+			};
+			return React.createElement(
+				React.Fragment,
+				null,
+				React.createElement(brandWordmark, { includeMark: false, className: "dshQuickRestartBrandArt" }),
+				React.createElement(
+					"button",
+					{
+						type: "button",
+						className: "dshQuickRestartBrandBtn",
+						title: "一键重启 DeepSeek Harness",
+						"aria-label": "一键重启 DeepSeek Harness",
+						tabIndex: -1,
+						onPointerDown: swallow,
+						onMouseDown: swallow,
+						onClick: (event) => {
+							swallow(event);
+							store.open();
 						},
-						React.createElement(RestartIcon, { size: 18 }),
-					),
-				);
+					},
+					React.createElement(RestartIcon, { size: 18 }),
+				),
+			);
 		}
 
 		function installSlots(ctx) {
@@ -568,13 +569,13 @@ window.__ModuleLoader__.load({
 			}
 			// The confirmation dialog, above the whole shell.
 			ctx.slots.inject("shell.overlay", () => {
-					overlaySeatReady = true;
-					const dispose = ctx.slots.register({ name: "shell.overlay", id: "quick-restart" }, ConfirmOverlay);
-					return () => {
-						overlaySeatReady = false;
-						dispose();
-					};
-				});
+				overlaySeatReady = true;
+				const dispose = ctx.slots.register({ name: "shell.overlay", id: "quick-restart" }, ConfirmOverlay);
+				return () => {
+					overlaySeatReady = false;
+					dispose();
+				};
+			});
 		}
 
 		function apply(ctx) {
