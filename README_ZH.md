@@ -82,7 +82,7 @@ Client (web)  ──POST /quick-restart/api/restart──▶  Node 半进程 (co
 HTTP 接口（POST）：
 
 - `/quick-restart/api/restart` — 触发重启（body `{"dryRun":true}` 可演练）
-- `/quick-restart/api/status` — 触发重启（body `{"dryRun":true}` 可演练）
+- `/quick-restart/api/status` — 状态（exe 路径、helper 是否存在等）
 - `/quick-restart/api/logs` — 上述日志的尾部
 
 ## 已知限制
