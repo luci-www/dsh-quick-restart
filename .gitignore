@@ -1,3 +1,7 @@
 node_modules/
 *.log
 .DS_Store
+docs/*.finalize.json
+docs/*.finalize-summary.json
+docs/*.delivery.json
+docs/*.browser-check.json

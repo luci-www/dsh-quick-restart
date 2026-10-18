@@ -4,7 +4,7 @@
 
 在侧边栏品牌行（deepseekHARNESS 字标右侧）加一个 ⟳ 按钮：点击 → 确认 → 应用在约 **2 秒内**关闭并自动重新打开。
 
-![icon](icon.svg)
+![对话框效果](docs/effect-dialog.png)
 
 ## 功能
 
@@ -61,6 +61,9 @@ Client (web)  ──POST /quick-restart/api/restart──▶  Node 半进程 (co
 3. **用 `process.execPath` + `ELECTRON_RUN_AS_NODE=1`** 跑 helper（这正是 DSH 启动自己 Host 子进程的方式），重启时再删掉该变量拉起真正的 GUI。
 4. **强杀优于优雅关闭**：taskkill 的 WM_CLOSE 对 Electron 子进程一律无效（"只能强制终止"），所以直接 `taskkill /F /T` 全部 PID 一次搞定。
 5. **重启时必须删除 `ELECTRON_RUN_AS_NODE`**，否则应用会以纯 Node 模式启动、无窗口。
+6. **webServer 必须模块级注册**：用 `ctx.inject(["webServer"], cb)` 这种回调式注入时，cb 收到的是子 ctx 而非 service，路由根本挂不上，POST 会落到 SPA fallback 返回 **405**。正确写法是模块级 `const inject = ["webServer"]` + `ctx.effect(() => ctx.webServer.register(...))`。
+
+交互式泳道讲解图：[docs/dsh-quick-restart-architecture.html](docs/dsh-quick-restart-architecture.html)
 
 ## 配置
 
@@ -68,7 +71,6 @@ Client (web)  ──POST /quick-restart/api/restart──▶  Node 半进程 (co
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `gracefulSeconds` | `3` | （保留参数）优雅关闭窗口秒数，1–30 |
 | `armDelayMs` | `400` | 确认后给浏览器留的绘制时间，0–10000 |
 
 ## 排查
