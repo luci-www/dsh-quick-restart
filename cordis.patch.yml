@@ -1,0 +1,4 @@
+# dsh-quick-restart bundle patch: mounts this plugin into the profile entry tree.
+- insert:
+    - id: quick-restart
+      name: 'dsh-quick-restart'
