@@ -1,0 +1,4 @@
+# normalize line endings for text files
+* text=auto eol=lf
+*.png binary
+*.svg binary
