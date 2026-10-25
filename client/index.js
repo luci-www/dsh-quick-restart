@@ -38,9 +38,19 @@ window.__ModuleLoader__.load({
 		 * with every restart request and lands in the host's spawn log, so that log
 		 * alone answers "which client bundle is the page really running?".
 		 */
-		const CLIENT_VERSION = "8";
+		const CLIENT_VERSION = "9";
 		/** If the app is still alive this long after arming, say so. */
 		const STUCK_AFTER_MS = 20000;
+		/**
+		 * The desktop shell answers a bare 503 to EVERY request while an update
+		 * task holds request admission (`installDesktopUpdateTaskControl` in
+		 * dsh-desktop-host writes `writeHead(503)` and nothing else). The plugin's
+		 * route is never reached, so retrying is the only correct response: the
+		 * lock is released when the update finishes.
+		 */
+		const RETRYABLE_STATUSES = [429, 502, 503, 504];
+		const RETRY_ATTEMPTS = 6;
+		const RETRY_BASE_MS = 800;
 		/**
 		 * The official wordmark, resolved once from the shared client primitives
 		 * package — the very component the shipped brand plugin renders — so the
@@ -104,29 +114,55 @@ window.__ModuleLoader__.load({
 			return base.href;
 		}
 
-		function requestRestart() {
-			return fetch(apiHref(), {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({
-					client: CLIENT_VERSION,
-					theme: readPalette().dark ? "dark" : "light",
-				}),
-			}).then((response) =>
-				response
-					.json()
-					.catch(() => null)
-					.then((parsed) => {
-						if (!response.ok || parsed === null || parsed.ok !== true) {
-							const detail =
-								parsed && parsed.error && parsed.error.message
-									? parsed.error.message
-									: "HTTP " + response.status;
-							throw new Error(detail);
-						}
-						return parsed.value;
-					}),
-			);
+		function statusMessage(status) {
+			if (status === 503) {
+				return "应用正在准备更新或安装，请求被暂时锁定（HTTP 503）。等更新完成后重试即可。";
+			}
+			if (status === 502 || status === 504) return "宿主暂时无响应（HTTP " + status + "），请稍后重试。";
+			if (status === 429) return "请求过于频繁（HTTP 429），请稍后重试。";
+			return "HTTP " + status;
+		}
+
+		const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+		/**
+		 * POST the restart request, retrying while the desktop shell holds its
+		 * update admission lock (bare 503) or the connection drops mid-update.
+		 * `onRetry` receives (attempt, status) so the dialog can explain the wait.
+		 */
+		async function requestRestart(onRetry) {
+			for (let attempt = 1; ; attempt += 1) {
+				let response;
+				try {
+					response = await fetch(apiHref(), {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							client: CLIENT_VERSION,
+							theme: readPalette().dark ? "dark" : "light",
+						}),
+					});
+				} catch (error) {
+					if (attempt >= RETRY_ATTEMPTS) throw error;
+					if (onRetry) onRetry(attempt, 0);
+					await wait(RETRY_BASE_MS * attempt);
+					continue;
+				}
+				if (RETRYABLE_STATUSES.includes(response.status) && attempt < RETRY_ATTEMPTS) {
+					if (onRetry) onRetry(attempt, response.status);
+					await wait(RETRY_BASE_MS * attempt);
+					continue;
+				}
+				const parsed = await response.json().catch(() => null);
+				if (!response.ok || parsed === null || parsed.ok !== true) {
+					const detail =
+						parsed && parsed.error && parsed.error.message
+							? parsed.error.message
+							: statusMessage(response.status);
+					throw new Error(detail);
+				}
+				return parsed.value;
+			}
 		}
 
 		/** Parse "#rgb" / "#rrggbb" / "rgb(...)" / "rgba(...)" into [r,g,b]. */
@@ -294,7 +330,21 @@ window.__ModuleLoader__.load({
 				confirm() {
 					if (api.isBusy()) return;
 					api.patch({ phase: "arming", message: "正在准备重启…" });
-					requestRestart().then(
+					const onRetry = (attempt, status) => {
+						// The shell's update admission lock is the common cause; say so
+						// instead of surfacing a bare HTTP 503.
+						const reason =
+							status === 503
+								? "应用正在准备更新，请求被暂时锁定"
+								: status === 0
+									? "宿主暂时无响应"
+									: "宿主暂时不可用（HTTP " + status + "）";
+						api.patch({
+							phase: "arming",
+							message: reason + "，正在重试（" + attempt + "/" + RETRY_ATTEMPTS + "）…",
+						});
+					};
+					requestRestart(onRetry).then(
 						() => {
 							api.patch({
 								phase: "armed",
