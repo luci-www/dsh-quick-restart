@@ -1,6 +1,6 @@
 {
   "name": "dsh-quick-restart",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "One-click restart for DeepSeek Harness (Windows): a restart icon beside the sidebar wordmark that asks for confirmation, then force-closes the app and relaunches it outside its job object in ~2 seconds.",
   "license": "MIT",
   "repository": {
