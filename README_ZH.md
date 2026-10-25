@@ -42,6 +42,8 @@ v0.4 在三层都加了保护，插件不会再 sabotage 升级：
 
 > **v0.4.2 修正**：`electron-updater` 在安装成功后**不会**删除 `pending\update-info.json`，所以「有标记」不等于「有更新待安装」。早期版本只看到文件就 409，会导致升级明明已经完成、按钮却永久变灰。现在按版本号判断：`pending ≤ 已安装` 视为残留标记，自动放行（`status.pendingUpdate.stale === true`）。
 
+> **v0.4.3 修正**：读 `app.asar` 时 Host 运行在 `ELECTRON_RUN_AS_NODE=1` 下，Electron 的 fs 补丁会把任何 `*.asar` 当成「压缩包里的目录」，`openSync(app.asar, "r")` 直接抛 `ENOENT, not found in …app.asar` —— 于是版本号读成 `null`，守卫又变得保守（继续 409）。现在读取期间临时设 `process.noAsar = true` 绕过该补丁，并在真实 Host 运行时下验证：`currentVersion = 0.2.1-rc.3`、`stale = true`、重启返回 200。
+
 需要强制绕过时（不推荐）：`POST /quick-restart/api/restart`，body 传 `{"force":true}`。
 
 ## 安装
