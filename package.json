@@ -1,7 +1,7 @@
 {
   "name": "dsh-quick-restart",
-  "version": "0.4.4",
-  "description": "One-click restart for DeepSeek Harness (Windows): a restart icon beside the sidebar wordmark that asks for confirmation, then force-closes the app and relaunches it outside its job object in ~2 seconds.",
+  "version": "0.4.7",
+  "description": "One-click restart and one-click plugin control for DeepSeek Harness (Windows): a restart icon beside the sidebar wordmark that asks for confirmation, then force-closes the app and relaunches it outside its job object in ~2 seconds.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -11,7 +11,9 @@
     "dsh",
     "deepseek-harness",
     "dsh-plugin",
-    "restart"
+    "restart",
+    "plugin",
+    "plugin-manager"
   ],
   "type": "module",
   "main": "lib/index.js",

@@ -10,6 +10,7 @@
 
 - **入口在侧边栏「插件」正下方**：`sidebar.panellist` 里 order 1，点开是一个面板，里面有状态、重启按钮和最近的 helper 日志。
 - **快**：实测从确认到窗口重新出现约 2 秒（旧版基于 PowerShell 的方案约 14 秒）。
+- **一键管理插件**：面板第二张卡片给出和左侧栏「插件」页同一份**已安装插件**清单，显示运行状态、逐行开关，并带「一键关闭其他插件（N）」和「全部恢复（N）」两个批量动作——全程走官方 `pluginManager`，只卸载 bundle 层（不动依赖、不是卸载包），核心模块永远受保护。
 - **保护官方升级**：检测到待安装的更新时会拒绝强制重启，并提示改用官方「立即安装并重启」（原因见下）。
 
 ### 为什么入口不再放品牌字标旁边（v0.4 变更）
@@ -163,6 +164,25 @@ HTTP 接口（POST）：
 - `/quick-restart/api/restart` — 触发重启（body `{"dryRun":true}` 可演练；`{"force":true}` 可绕过待更新保护）
 - `/quick-restart/api/status` — 状态（exe 路径、helper 是否存在、`pendingUpdate` 等）
 - `/quick-restart/api/logs` — 上述日志的尾部
+- `/quick-restart/api/plugins` — 已安装插件清单：每个 bundle 的 `name` / `enabled` / `removable` / `readOnlyReason` / `error` / `self`，以及 `counts`
+- `/quick-restart/api/set-plugin` — 切换单个插件：`{"name":"dsh-better-sidebar","enabled":false}`
+- `/quick-restart/api/set-plugins` — 批量切换：`{"names":["…"],"enabled":false}`（单次最多 200 个，严格逐个串行执行）
+
+所有 `set-plugin*` 请求一律返回 `200`，逐条结果在 `value.applied` / `value.rejected`（原因：`unknown-plugin` / `management-required` / `not-removable` 或 `ManagementFailure` 的 code），部分成功时 `value.partial === true`。**先校验、后写入**：任何一条不合法都会在动盘前被拦进 `rejected`，不会出现半应用。字段以 `names` 为准；`name`、`entryId`、`entryIds` 仍被接受，好让浏览器里缓存的旧版前端继续可用。
+
+## 一键管理插件（v0.4.6）
+
+面板第二张卡片列出 profile 里**已安装的插件**——和左侧栏「插件」页完全同一份清单，提供逐行开关和两个批量按钮：「一键关闭其他插件（N）」「全部恢复（N）」。
+
+这些是 *bundle*：登记在 profile `dependencies` 里的包。关闭只是把它从 `dsh.profile.bundles` 里摘掉，于是它不再被加载——**不是卸载**，依赖全部保留，随时可以一键装回。有一点沿袭自官方管理器的行为需要注意：重新启用会把包名**追加到 `dsh.profile.bundles` 末尾**，于是它的 patch 图层变成最高优先级。
+
+三条设计原则保证它安全：
+
+1. **不自己写任何 profile 文件**。它调的是官方 `pluginManager.listBundles()` / `setBundleEnabled()`——和内置插件管理器界面走同一条路，于是 `withFileLock`、`writeFileAtomic`、清单读写这些脏活全是官方实现。
+2. **只碰官方清单标为 `removable` 的 bundle**。贡献 19 个 `protectedModules` 之一的包（plugin manager、cordis loader、webserver、HMR……）会被官方标成 `readOnlyReason: "management-required"`，请求在写盘前就被拒——核心永远活着。
+3. **本插件被显式排除**。它只是个普通包，官方页面允许把它关掉，但那样会 dispose 掉正在提问的这张面板，所以 Host 侧在写盘前直接拒成 `management-required`。
+
+是不是立刻生效？看具体是哪个 bundle，不能一概而论。`setBundleEnabled` → `change()` → `configure()` → `hmr.runExclusive()` → `reconcileProfile()` 有能力把 bundle 的 layer 热替换掉（`application: "applied"`），但大多数第三方 bundle 会回 `application: "restart-required"`：清单（`dsh.profile.bundles`）已经干净了，可 layer 还在内存里跑，要等下次启动才真正卸下。在一个真实的 21 插件 profile 上实测：关闭时 8 个热生效、13 个需要重启。所以卡片会照实说「其中 N 个要重启一次才真正卸下」，而不是假装插件已经消失——而重启按钮就在它上面。由于 `runExclusive` 基于 `AsyncLocalStorage` 且拒绝嵌套事务（"HMR transactions cannot be nested"），这些调用是严格串行 `await` 的，绝不并发。
 
 ### 报错对照
 
@@ -175,6 +195,7 @@ HTTP 接口（POST）：
 ## 已知限制
 
 - 仅支持 Windows（强杀/重启逻辑依赖 `taskkill`、WMI 与 Job Object 语义）。
+- 插件管理只覆盖官方清单标为 `removable` 的 bundle；贡献受保护核心模块的包与本插件自身不可关闭（官方设计，见上）。
 - 若 DSH 未来修改进程模型（Job Object、进程名）或更新流程，需要同步更新 helper 与待更新检测。
 - 本插件无法执行官方升级：`autoInstallOnAppQuit = false` 时安装只能由 Electron 主进程的 `quitAndInstall` 完成。
 

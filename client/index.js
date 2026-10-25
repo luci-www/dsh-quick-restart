@@ -38,7 +38,7 @@ window.__ModuleLoader__.load({
 		 * with every restart request and lands in the host's spawn log, so that log
 		 * alone answers "which client bundle is the page really running?".
 		 */
-		const CLIENT_VERSION = "10";
+		const CLIENT_VERSION = "13";
 		/** If the app is still alive this long after arming, say so. */
 		const STUCK_AFTER_MS = 20000;
 		/** 409 "update-pending" is terminal for this attempt: never retried. */
@@ -83,6 +83,24 @@ window.__ModuleLoader__.load({
 			".dshQrActions{display:flex;justify-content:flex-end;gap:8px}",
 			".dshQrCancel{padding:7px 14px;border-radius:9px;border:1px solid var(--dsh-qr-border,rgba(127,127,127,.4));background:transparent;color:var(--dsh-qr-text,#f4f5f7);-webkit-text-fill-color:var(--dsh-qr-text,#f4f5f7);font:inherit;font-size:13px;cursor:pointer}",
 			".dshQrCancel:disabled,.dshQrPrimary:disabled{opacity:.55;cursor:default}",
+			".dshQrSection{display:flex;flex-direction:column;gap:10px;padding:14px 16px;border-radius:12px;border:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.28));background:var(--dsw-alias-bg-secondary,rgba(127,127,127,.08))}",
+			".dshQrSectionHead{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap}",
+			".dshQrSectionTitle{font-size:14px;font-weight:600}",
+			".dshQrCount{font-size:12px;color:var(--dsw-alias-label-secondary,inherit)}",
+			".dshQrList{display:flex;flex-direction:column;gap:6px;max-height:320px;overflow:auto;margin:0;padding:0;list-style:none}",
+			".dshQrItem{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:9px;border:1px solid transparent;background:rgba(127,127,127,.08)}",
+			'.dshQrItem[data-locked="true"]{opacity:.62}',
+			".dshQrItemName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,Consolas,monospace;font-size:12px}",
+			".dshQrTag{flex:none;padding:1px 7px;border-radius:99px;border:1px solid rgba(127,127,127,.4);font-size:11px;color:var(--dsw-alias-label-secondary,inherit)}",
+			'.dshQrTag[data-state="on"]{border-color:rgba(63,185,80,.55);color:#3fb950}',
+			'.dshQrTag[data-state="off"]{border-color:rgba(127,127,127,.45)}',
+			'.dshQrTag[data-state="lock"]{border-color:rgba(231,185,84,.5);color:#e7b954}',
+			".dshQrToggle{flex:none;position:relative;width:34px;height:19px;padding:0;border-radius:99px;border:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.45));background:rgba(127,127,127,.28);cursor:pointer;transition:background .15s ease}",
+			".dshQrToggle:disabled{cursor:default;opacity:.5}",
+			'.dshQrToggle[data-on="true"]{background:#2f6feb;border-color:#2f6feb}',
+			'.dshQrToggle::after{content:"";position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#fff;transition:transform .15s ease}',
+			'.dshQrToggle[data-on="true"]::after{transform:translateX(15px)}',
+			".dshQrInline{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--dsw-alias-label-secondary,inherit)}",
 		].join("\n");
 
 		function installStyles() {
@@ -267,6 +285,288 @@ window.__ModuleLoader__.load({
 			return state;
 		}
 
+		/**
+		 * Installed-bundle state, kept apart from the restart store so a long
+		 * disable batch never freezes the restart dialog.
+		 *
+		 * `phase` ∈ idle | loading | busy | error. `busy` blocks the whole list
+		 * while the host applies a change: every official setBundleEnabled call
+		 * runs its own HMR transaction, and the host applies them strictly one at
+		 * a time, so the UI must not fire a second batch on top.
+		 */
+		const pluginStore = (() => {
+			let state = { phase: "idle", message: "", plugins: [], counts: null };
+			const listeners = new Set();
+			const emit = () => {
+				for (const listener of Array.from(listeners)) {
+					try {
+						listener();
+					} catch (error) {
+						console.warn("[dsh-quick-restart] plugin listener failed", error);
+					}
+				}
+			};
+			const api = {
+				get: () => state,
+				subscribe(listener) {
+					listeners.add(listener);
+					return () => {
+						listeners.delete(listener);
+					};
+				},
+				patch(next) {
+					state = { ...state, ...next };
+					emit();
+				},
+			};
+			return api;
+		})();
+
+		function usePluginState() {
+			const [state, setState] = React.useState(pluginStore.get());
+			React.useEffect(() => pluginStore.subscribe(() => setState(pluginStore.get())), []);
+			return state;
+		}
+
+		/** Merge the host's answer into the list, keeping our local row order. */
+		function mergePlugins(current, incoming) {
+			if (!Array.isArray(incoming)) return current;
+			const byName = new Map(incoming.map((row) => [row.name, row]));
+			const merged = current.map((row) => (byName.has(row.name) ? { ...row, ...byName.get(row.name) } : row));
+			for (const row of incoming) {
+				if (!merged.some((item) => item.name === row.name)) merged.push(row);
+			}
+			return merged;
+		}
+
+		/**
+		 * Can this panel flip the row? Bundles are toggled by adding/removing the
+		 * package from `dsh.profile.bundles`, so only installed, removable,
+		 * non-protected bundles qualify — and never this plugin itself, because
+		 * turning it off would dispose the panel doing the asking.
+		 */
+		function isManageable(row) {
+			return row.removable === true && !row.readOnlyReason && !row.error && row.self !== true;
+		}
+
+		/** Why a row cannot be toggled here, in three words or less. */
+		function lockLabel(row) {
+			if (row.self === true) return "本插件";
+			if (row.error === "not-bundle") return "非插件";
+			if (row.readOnlyReason === "management-required") return "核心";
+			if (row.readOnlyReason) return String(row.readOnlyReason);
+			return "不可关闭";
+		}
+
+		/**
+		 * Ask the host to flip one or many bundles. The host validates every name
+		 * against the official manager's own list before writing, so a stale row
+		 * is rejected instead of half-applied.
+		 */
+		async function applyPluginChange(names, enabled) {
+			const list = Array.isArray(names) ? names : [names];
+			if (list.length === 0) return;
+			pluginStore.patch({
+				phase: "busy",
+				message: enabled ? "正在启用插件…" : "正在停用插件…（逐个应用，请稍候）",
+			});
+			try {
+				const value = await postJson(list.length === 1 ? "set-plugin" : "set-plugins", {
+					names: list,
+					enabled,
+				});
+				const applied = Array.isArray(value && value.applied) ? value.applied : [];
+				const rejected = Array.isArray(value && value.rejected) ? value.rejected : [];
+				pluginStore.patch({
+					phase: "idle",
+					message: describeChange(list.length, enabled, applied, rejected),
+					plugins: mergePlugins(pluginStore.get().plugins, value && value.plugins),
+				});
+			} catch (error) {
+				pluginStore.patch({
+					phase: "error",
+					message: (enabled ? "启用失败：" : "停用失败：") + (error && error.message ? error.message : String(error)),
+				});
+			}
+		}
+
+		/**
+		 * Official `setBundleEnabled` answers `applied` only when the bundle's
+		 * layer could be swapped live; most third-party bundles answer
+		 * `restart-required`, i.e. the manifest is already clean but the layer is
+		 * still loaded until the next start. Say that out loud instead of
+		 * pretending the plugin is already gone.
+		 */
+		function describeChange(requested, enabled, applied, rejected) {
+			const verb = enabled ? "启用" : "停用";
+			const verbed = enabled ? "加载" : "卸下";
+			const list = Array.isArray(applied) ? applied : [];
+			const restart = list.filter((row) => row.application === "restart-required").length;
+			const parts = [`已${verb} ${list.length} 个插件`];
+			if (rejected.length > 0) {
+				const shown = rejected
+					.slice(0, 2)
+					.map((row) => `${row.name}（${row.reason}）`)
+					.join("、");
+				parts.push(`${rejected.length} 个已跳过：${shown}${rejected.length > 2 ? " 等" : ""}`);
+			}
+			if (restart > 0) parts.push(`其中 ${restart} 个要重启一次才真正${verbed}`);
+			if (requested > 1 && list.length === 0) parts.push("没有插件被改动");
+			return parts.join("；") + "。";
+		}
+
+		function PluginToggle(props) {
+			const row = props.row;
+			const busy = props.busy === true;
+			const manageable = isManageable(row);
+			const on = row.enabled === true;
+			return React.createElement(
+				"button",
+				{
+					type: "button",
+					className: "dshQrToggle",
+					"data-on": on ? "true" : "false",
+					disabled: busy || !manageable,
+					title: !manageable
+						? lockLabel(row) + " — 不能在这里开关"
+						: on
+							? "点击停用 " + row.name
+							: "点击启用 " + row.name,
+					"aria-label": on ? "停用 " + row.name : "启用 " + row.name,
+					onClick: () => applyPluginChange([row.name], !on),
+				},
+			);
+		}
+
+		/** The plugin card: the profile's installed bundles, with bulk actions. */
+		function PluginCard() {
+			const plugins = usePluginState();
+			const [loading, setLoading] = React.useState(true);
+			const rows = Array.isArray(plugins.plugins) ? plugins.plugins : [];
+			const manageable = rows.filter(isManageable);
+			const enabledManageable = manageable.filter((row) => row.enabled === true);
+			const busy = plugins.phase === "busy";
+
+			const refresh = React.useCallback(() => {
+				setLoading(true);
+				postJson("plugins")
+					.then((value) => {
+						const list = value && Array.isArray(value.plugins) ? value.plugins : [];
+						pluginStore.patch({
+							phase: "idle",
+							message: "",
+							plugins: list,
+							counts: value && value.counts ? value.counts : null,
+						});
+					})
+					.catch((error) => {
+						pluginStore.patch({
+							phase: "error",
+							message: error && error.message ? error.message : String(error),
+						});
+					})
+					.finally(() => setLoading(false));
+			}, []);
+
+			React.useEffect(() => {
+				refresh();
+			}, [refresh]);
+
+			const onDisableAll = () => {
+				if (enabledManageable.length === 0) return;
+				applyPluginChange(enabledManageable.map((row) => row.name), false);
+			};
+			const onEnableAll = () => {
+				const disabled = manageable.filter((row) => row.enabled !== true);
+				if (disabled.length === 0) return;
+				applyPluginChange(disabled.map((row) => row.name), true);
+			};
+
+			const counts = plugins.counts;
+			return React.createElement(
+				"div",
+				{ className: "dshQrSection" },
+				React.createElement(
+					"div",
+					{ className: "dshQrSectionHead" },
+					React.createElement("span", { className: "dshQrSectionTitle" }, "已安装插件"),
+					React.createElement(
+						"span",
+						{ className: "dshQrCount" },
+						counts
+							? `已安装 ${counts.total} 个 · 已开启 ${counts.enabled} 个 · 可开关 ${counts.toggleable} 个 · 受保护 ${counts.protected} 个`
+							: `已安装 ${rows.length} 个`,
+					),
+				),
+				React.createElement(
+					"p",
+					{ className: "dshQrHint" },
+					"这里列出的是侧边栏「插件」页里的已安装插件。关闭只是不再加载它（把包名从 dsh.profile.bundles 摘掉），依赖仍然保留，可随时恢复；DSH 官方的核心模块与插件管理器自身不可关闭。万一侧边栏入口被一起关掉了，去「插件」页点开即可恢复。",
+				),
+				React.createElement(
+					"div",
+					{ className: "dshQrRow" },
+					React.createElement(
+						"button",
+						{
+							type: "button",
+							className: "dshQrGhost",
+							disabled: busy || enabledManageable.length === 0,
+							onClick: onDisableAll,
+						},
+						busy ? "处理中…" : `一键关闭其他插件（${enabledManageable.length}）`,
+					),
+					React.createElement(
+						"button",
+						{
+							type: "button",
+							className: "dshQrGhost",
+							disabled: busy || manageable.length === enabledManageable.length,
+							onClick: onEnableAll,
+						},
+						`全部恢复（${manageable.length - enabledManageable.length}）`,
+					),
+					React.createElement(
+						"button",
+						{ type: "button", className: "dshQrGhost", disabled: busy || loading, onClick: refresh },
+						loading ? "读取中…" : "刷新列表",
+					),
+				),
+				plugins.phase === "error" && plugins.message !== ""
+					? React.createElement("div", { className: "dshQrErr" }, plugins.message)
+					: plugins.phase === "busy" && plugins.message !== ""
+						? React.createElement("div", { className: "dshQrInline" }, plugins.message)
+						: plugins.message !== ""
+							? React.createElement("div", { className: "dshQrOk" }, plugins.message)
+							: null,
+				rows.length === 0
+					? React.createElement("div", { className: "dshQrInline" }, loading ? "正在读取插件列表…" : "（没有读到插件）")
+					: React.createElement(
+							"ul",
+							{ className: "dshQrList" },
+							rows.map((row) =>
+								React.createElement(
+									"li",
+									{ className: "dshQrItem", key: row.name, "data-locked": isManageable(row) ? "false" : "true" },
+									React.createElement("span", { className: "dshQrItemName", title: row.description || row.name }, row.name),
+									!isManageable(row)
+										? React.createElement(
+												"span",
+												{ className: "dshQrTag", "data-state": "lock" },
+												lockLabel(row),
+											)
+										: React.createElement(
+												"span",
+												{ className: "dshQrTag", "data-state": row.enabled === true ? "on" : "off" },
+												row.enabled === true ? "已开启" : "已关闭",
+											),
+									React.createElement(PluginToggle, { row, busy }),
+								),
+							),
+						),
+			);
+		}
+
 		function RestartIcon(props) {
 			const size = props && typeof props.size === "number" ? props.size : 18;
 			const spinning = props && props.spin === true;
@@ -420,6 +720,7 @@ window.__ModuleLoader__.load({
 							)
 						: null,
 				),
+				React.createElement(PluginCard, null),
 				React.createElement(
 					"div",
 					null,

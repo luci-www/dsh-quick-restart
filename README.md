@@ -2,7 +2,7 @@
 
 **One-click restart plugin for the DeepSeek Harness desktop app (Windows).**
 
-Adds a panel directly below the sidebar's 「插件」 (Plugins) entry: open it → restart the app in about **2 seconds**, with live status and the recent helper log.
+Adds a panel directly below the sidebar's 「插件」 (Plugins) entry: open it → restart the app in about **2 seconds**, with live status and the recent helper log. The same panel also carries a **one-click plugin control** card that turns every other plugin off and back on.
 
 See the [Chinese README](README_ZH.md) for the full document (installation, architecture, troubleshooting).
 
@@ -12,6 +12,7 @@ See the [Chinese README](README_ZH.md) for the full document (installation, arch
 
 - **Lives under 「插件」**: a `sidebar.panellist` row at order 1 (right below Plugins) addressing a `main` panel with status, the action and the log tail.
 - One-click restart in ~2 s (an earlier PowerShell-based design took ~14 s).
+- **One-click plugin control**: the same list as the sidebar's 「插件」 page — every installed plugin — with a per-row switch and "turn off every other plugin" / "restore all" buttons. All of it goes through the official `pluginManager`, which only unloads a bundle (never uninstalls it) and refuses to touch the core.
 - **Protects the official upgrade**: refuses to force-restart while a genuinely newer update is downloaded and waiting, because only the official install flow can apply it.
 
 ## Why the entry moved (v0.4)
@@ -102,6 +103,25 @@ Key measured facts behind the design (details in source comments):
 | POST | `/quick-restart/api/restart` | Trigger the restart (`{ "dryRun": true }` rehearses; `{ "force": true }` bypasses the pending-update guard) |
 | POST | `/quick-restart/api/status` | Status: exe path, helper presence, `pendingUpdate` |
 | POST | `/quick-restart/api/logs` | Tails of the spawn, helper and launcher logs |
+| POST | `/quick-restart/api/plugins` | Installed bundles: `name`, `enabled`, `removable`, `readOnlyReason`, `error`, `self`, plus counts |
+| POST | `/quick-restart/api/set-plugin` | Switch one bundle: `{ "name": "dsh-better-sidebar", "enabled": false }` |
+| POST | `/quick-restart/api/set-plugins` | Switch many at once: `{ "names": ["…"], "enabled": false }` (max 200 per call, applied strictly one at a time) |
+
+Every `set-plugin*` call answers `200` and reports per-bundle outcomes in `value.applied` / `value.rejected` (`unknown-plugin`, `management-required`, `not-removable`, or the `ManagementFailure` code), with `value.partial: true` when some succeeded and some did not. A single bad name never half-applies a batch: every name is validated against the live bundle list **before** anything is written. `names` is the canonical field; `name`, `entryId` and `entryIds` are still accepted so an older cached client bundle keeps working.
+
+## One-click plugin control (v0.4.6)
+
+The panel's second card lists the profile's **installed plugins** — exactly what the sidebar's 「插件」 page shows — and offers a per-row toggle plus two bulk actions: **Turn off the other plugins (N)** and **Restore all (N)**.
+
+These are *bundles*: packages recorded in the profile's `dependencies`. Switching one off removes its name from `dsh.profile.bundles`, so it simply stops being loaded; it is **not** uninstalled, its dependencies stay, and restoring it is instant. One caveat inherited from the official manager: re-selecting a bundle appends it to the end of `dsh.profile.bundles`, so its patch layer ends up with the highest precedence.
+
+Three rules make it safe:
+
+1. It never writes a profile file by hand. It calls the official `pluginManager.listBundles()` / `setBundleEnabled()`, the same path the built-in plugin manager UI uses, so `withFileLock`, `writeFileAtomic` and every validity check are the official ones.
+2. Only bundles the official manager reports as `removable` are offered. Bundles contributing one of the 19 `protectedModules` (plugin manager, cordis loader, webserver, HMR, …) are refused with `readOnlyReason: "management-required"`, so the core always survives.
+3. This plugin is excluded explicitly. It is an ordinary package, so the official page would happily let a user switch it off — which would dispose the very panel doing the asking. The host rejects it as `management-required` before any write.
+
+Is it immediate? Only sometimes, and the answer is per bundle. `setBundleEnabled` → `change()` → `configure()` → `hmr.runExclusive()` → `reconcileProfile()` can swap a bundle's layer live (`application: "applied"`), but most third-party bundles answer `application: "restart-required"`: the manifest is already clean, yet the layer stays loaded until the next start. Measured on a real 21-plugin profile: 8 hot, 13 restart-required on the way out. The card therefore reports 「其中 N 个要重启一次才真正卸下」 instead of claiming the plugins are already gone — and the restart button is right above it. Because `runExclusive` is `AsyncLocalStorage`-based and rejects nested transactions, the calls are issued strictly sequentially (`await` one before the next).
 
 ## Troubleshooting
 
