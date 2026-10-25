@@ -332,8 +332,11 @@ window.__ModuleLoader__.load({
 				return () => clearInterval(timer);
 			}, [refresh]);
 
+			// A leftover marker for the ALREADY installed build (electron-updater
+			// never cleans it up) must not disable the button.
 			const pending = status && status.pendingUpdate ? status.pendingUpdate : null;
-			const canRestart = !pending;
+			const blocking = pending !== null && pending.stale !== true ? pending : null;
+			const canRestart = blocking === null;
 
 			/** The panel never restarts on its own: it opens the shared confirmation
 			 *  dialog so both entry points behave identically. */
@@ -353,7 +356,7 @@ window.__ModuleLoader__.load({
 					{ className: "dshQrHint" },
 					"关闭 DeepSeek Harness 并自动重新打开，实测约 2 秒。正在进行的回答会被中断，已保存的会话不受影响。",
 				),
-				pending !== null
+				blocking !== null
 					? React.createElement(
 							"div",
 							{ className: "dshQrWarn" },
@@ -362,7 +365,7 @@ window.__ModuleLoader__.load({
 								"span",
 								null,
 								"检测到待安装的更新" +
-									(pending.version ? " v" + pending.version : "") +
+									(blocking.version ? " v" + blocking.version : "") +
 									"。请用官方「立即安装并重启」完成升级 —— 强制重启走不到更新安装流程，会导致升级装不上。",
 							),
 						)

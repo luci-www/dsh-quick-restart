@@ -36,9 +36,11 @@ v0.4 在三层都加了保护，插件不会再 sabotage 升级：
 
 | 层 | 行为 |
 |---|---|
-| Node 半进程 | 启动 helper 前读 `pending/update-info.json`；存在就返回 **409 `update-pending`**，并在 body 里带上版本号 |
+| Node 半进程 | 启动 helper 前读 `pending/update-info.json`，并把里面的版本号和**当前安装版本**（直接读 `<app>\resources\app.asar`）比较：只有 pending **严格更新**时才返回 **409 `update-pending`** |
 | helper | 临杀前再检查一次该标记（防止「点了已确认 → 下载刚好完成」的竞态），命中就直接中止、不杀 |
 | 面板 | 顶部显示黄色警告条 + 禁用按钮，明确告诉你用官方升级 |
+
+> **v0.4.2 修正**：`electron-updater` 在安装成功后**不会**删除 `pending\update-info.json`，所以「有标记」不等于「有更新待安装」。早期版本只看到文件就 409，会导致升级明明已经完成、按钮却永久变灰。现在按版本号判断：`pending ≤ 已安装` 视为残留标记，自动放行（`status.pendingUpdate.stale === true`）。
 
 需要强制绕过时（不推荐）：`POST /quick-restart/api/restart`，body 传 `{"force":true}`。
 
@@ -166,7 +168,7 @@ HTTP 接口（POST）：
 |---|---|---|
 | `HTTP 405` | Node 半进程的路由没挂上（插件未被加载，或用了回调式 `ctx.inject` 写法），请求落到 SPA fallback | 确认 `dsh.profile.bundles` 与 `dependencies` 里都有 `dsh-quick-restart`，且 `node_modules/dsh-quick-restart` 可解析；改为模块级 `inject` + `ctx.effect` 注册 |
 | `HTTP 503` | **不是插件的问题**：桌面端正在下载/安装更新，`dsh-desktop-host` 的更新准入锁会给所有请求回裸 503，插件的路由根本没收到请求 | 等更新完成再点；v0.3.1 起客户端会自动退避重试（最多 6 次），并在对话框里显示「应用正在准备更新」 |
-| `update-pending`（409） | 有下载好但没安装的更新。强制重启走不到官方安装流程，会把升级卡住 | 用 DSH 官方「立即安装并重启」；装完标记消失，按钮自动恢复 |
+| `update-pending`（409） | 有**下载好但确实还没装上**的更新（插件比较 pending 版本与已安装版本，只有更新时才拦）。强制重启走不到官方安装流程，会把升级卡住 | 用 DSH 官方「立即安装并重启」；装完后即使 `pending\update-info.json` 还在，插件也会按版本号识别为残留并自动放行 |
 
 ## 已知限制
 

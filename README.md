@@ -12,7 +12,7 @@ See the [Chinese README](README_ZH.md) for the full document (installation, arch
 
 - **Lives under 「插件」**: a `sidebar.panellist` row at order 1 (right below Plugins) addressing a `main` panel with status, the action and the log tail.
 - One-click restart in ~2 s (an earlier PowerShell-based design took ~14 s).
-- **Protects the official upgrade**: refuses to force-restart while a downloaded update is waiting, because only the official install flow can apply it.
+- **Protects the official upgrade**: refuses to force-restart while a genuinely newer update is downloaded and waiting, because only the official install flow can apply it.
 
 ## Why the entry moved (v0.4)
 
@@ -38,9 +38,11 @@ v0.4 guards all three layers:
 
 | Layer | Behaviour |
 | --- | --- |
-| Node half | Reads `pending/update-info.json` before launching the helper; if present it answers **409 `update-pending`** with the version |
+| Node half | Reads `pending/update-info.json` and compares its version with the **installed** build (parsed from `<app>\resources\app.asar`); only a strictly newer pending version answers **409 `update-pending`** |
 | Helper | Re-checks the marker immediately before killing (covers "confirmed, then the download finished"), and aborts instead of killing |
 | Panel | Shows a warning and disables the button, pointing at the official install |
+
+> **Fixed in v0.4.2**: `electron-updater` never deletes `pending\update-info.json` after a successful install, so "marker present" does not mean "update waiting". v0.4.0/v0.4.1 answered 409 on the bare file and left the button greyed out forever after an upgrade. The guard is now version-aware: `pending ≤ installed` is treated as a leftover (`status.pendingUpdate.stale === true`) and the restart is allowed.
 
 Opt out (not recommended): `POST /quick-restart/api/restart` with `{"force":true}`.
 
@@ -107,7 +109,7 @@ Key measured facts behind the design (details in source comments):
 | --- | --- | --- |
 | `HTTP 405` | The Node half's route is not mounted (plugin not loaded, or a callback-style `ctx.inject` was used), so the POST fell through to the SPA fallback | Make sure `dsh-quick-restart` is in both `dsh.profile.bundles` and `dependencies`, and that `node_modules/dsh-quick-restart` resolves; register with a module-level `inject` plus `ctx.effect` |
 | `HTTP 503` | **Not the plugin**: the desktop shell is downloading or installing an update, and `dsh-desktop-host`'s update admission lock answers every request with a bare 503 before routing | Wait for the update to finish. Since v0.3.1 the client backs off and retries (up to 6 attempts) and says so in the dialog |
-| `update-pending` (409) | A downloaded update is waiting to install, and a force-restart would strand it | Use the official 「立即安装并重启」; once installed the marker disappears and the button works again |
+| `update-pending` (409) | A downloaded update is **actually newer than the installed build**. A force-restart cannot run the official install flow and would strand it | Use the official 「立即安装并重启」. Once installed, a leftover marker is ignored automatically (compared by version) |
 
 ## Interactive diagram
 
