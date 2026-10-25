@@ -44,6 +44,39 @@ v0.4 guards all three layers:
 
 Opt out (not recommended): `POST /quick-restart/api/restart` with `{"force":true}`.
 
+## Finishing the Host's shutdown (v0.4.1)
+
+The upgrade then failed one step later with:
+
+```
+Desktop update: Host did not complete graceful task teardown
+(exit null, signal SIGTERM, shutdown acknowledged true, graceful deadline exceeded true)
+```
+
+`stop(requireGraceful)` sends `{type:"shutdown"}`, waits **10 s** for the child to exit, escalates to SIGTERM, and refuses the install when the exit was not clean. The Host does ack (`shutdown.shutdown(0)` → `shutdown-complete` → `process.disconnect()`), but Node only exits once the event loop drains — one ref'd timer or child stdio pipe from any plugin keeps it alive forever.
+
+Measured attribution across the profile's 16 plugins with a `dsh` manifest (apply → dispose → count surviving handles and timer creation stacks):
+
+| Plugin | Left after dispose |
+| --- | --- |
+| `billion-context` | **5 timers**, including `setInterval(10000) armRecoveryTimer`, `setTimeout(499) refreshTimeout`, `setTimeout(5000)` |
+| `dsh-plugin-wallpaper-engine` | 2 timers (3000, `scheduleAdapterRestart` 30000) |
+| `@liustack/modlens` | 1 timer (`scheduleRetry` 5000) |
+| `@xmanrui/dsh-im` | 0 timers, 2 PipeWraps |
+| **`dsh-quick-restart`** | **0** |
+
+So this plugin is not what holds the Host open — but it runs inside that Host and can finish the job without touching third-party code:
+
+```
+process 'disconnect' (Host acked shutdown, IPC dropped)
+  └─ log the resources still alive
+  └─ arm one *unref'd* timer (default 2 s)
+       ├─ loop drains   → the process already exited; the timer never fires
+       └─ leaked handle → process.exit(0) inside the desktop's 10 s window
+```
+
+`exit 0` within 10 s satisfies `requireGraceful`, so the installer proceeds. Verified end to end: with a simulated 10 s interval leak the host path exits **code 0 at 2045 ms**; with a clean loop it exits on its own in **36 ms**.
+
 ## Install (Windows only)
 
 ```powershell

@@ -92,6 +92,49 @@ Client (web)  ──POST /quick-restart/api/restart──▶  Node 半进程 (co
 5. **重启时必须删除 `ELECTRON_RUN_AS_NODE`**，否则应用会以纯 Node 模式启动、无窗口。
 6. **webServer 必须模块级注册**：用 `ctx.inject(["webServer"], cb)` 这种回调式注入时，cb 收到的是子 ctx 而非 service，路由根本挂不上，POST 会落到 SPA fallback 返回 **405**。正确写法是模块级 `const inject = ["webServer"]` + `ctx.effect(() => ctx.webServer.register(...))`。
 
+### 让 Host 真的能退出（v0.4.1）
+
+官方升级最后的失败信息是：
+
+```
+Desktop update: Host did not complete graceful task teardown
+(exit null, signal SIGTERM, shutdown acknowledged true, graceful deadline exceeded true)
+```
+
+读 `_electron_main.js` 的 `stop(requireGraceful)` 可以还原它的判定：
+
+```js
+child.send({ type: "shutdown" });
+const graceful = await exitsWithin(exited, 1e4);   // ← 10 秒等它自己退
+if (!graceful) child.kill("SIGTERM");
+...
+if (requireGraceful && (!graceful || child.exitCode !== 0 || !this.shutdownCompleted)) throw new DesktopHostUncleanExitError(...)
+```
+
+Host 侧（`_host_index.js`）确实照做了：`shutdown.shutdown(0)` → 发 `shutdown-complete` → `process.disconnect()`。但 Node 只有在**事件循环排空后**才会退出；只要某个插件留着 ref 定时器或子进程管道，进程就永远不退 → 10 秒后 SIGTERM → `exit null` → 拒绝安装。
+
+**实测归因**（逐个加载 profile 里 16 个带 `dsh` 清单的插件，dispose 后统计残留句柄与定时器创建栈）：
+
+| 插件 | dispose 后残留 |
+|---|---|
+| `billion-context` | **5 个定时器**，含 `setInterval(10000) armRecoveryTimer`、`setTimeout(499) refreshTimeout`、`setTimeout(5000)` |
+| `dsh-plugin-wallpaper-engine` | 2 个定时器（3000 / `scheduleAdapterRestart` 30000） |
+| `@liustack/modlens` | 1 个定时器（`scheduleRetry` 5000） |
+| `@xmanrui/dsh-im` | 0 个定时器，2 个 PipeWrap（通道连接） |
+| **`dsh-quick-restart`** | **0** |
+
+所以本插件不是把 Host 拖住的那个。但升级失败的直接原因是这个泄露，而本插件跑在同一个 Host 里、又有能力兜底，于是 v0.4.1 加了一段收尾逻辑，**不改任何第三方插件**：
+
+```
+收到 process 'disconnect'（Host 已确认 shutdown 并断开 IPC）
+  └─ 记一条日志：当时还活着的资源统计
+  └─ 挂一个 unref 定时器（默认 2s）
+       ├─ 循环能排空 → 进程早就自然退出，定时器根本不会触发
+       └─ 循环被泄漏句柄拖住 → 2s 后 process.exit(0)
+```
+
+`exit 0` + 在 10 秒内 = 满足 `requireGraceful`，安装器得以继续。端到端验证：模拟一个 10 秒 interval 泄漏，Host 路径下 **2045 ms 退出，code 0**；无泄漏时 **36 ms** 自然退出。
+
 交互式泳道讲解图：[docs/dsh-quick-restart-architecture.html](docs/dsh-quick-restart-architecture.html)
 
 ## 配置
@@ -101,6 +144,7 @@ Client (web)  ──POST /quick-restart/api/restart──▶  Node 半进程 (co
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `armDelayMs` | `400` | 确认后给浏览器留的绘制时间，0–10000 |
+| `shutdownExitMs` | `2000` | Host 确认 shutdown 并断开 IPC 后，多久强制 `exit(0)`；0–9000，直接影响官方升级的成功率 |
 
 ## 排查
 
