@@ -8,10 +8,39 @@
 
 ## 功能
 
-- **一键重启**：点击侧边栏字标旁的 ⟳ 图标，弹出自带深浅主题适配的确认对话框，确认后自动完成整个重启流程。
+- **入口在侧边栏「插件」正下方**：`sidebar.panellist` 里 order 1，点开是一个面板，里面有状态、重启按钮和最近的 helper 日志。
 - **快**：实测从确认到窗口重新出现约 2 秒（旧版基于 PowerShell 的方案约 14 秒）。
-- **主题自适应**：确认对话框读取应用真实底色，明暗主题下都清晰可读。
-- **安全兜底**：品牌字标组件不可用时自动降级为侧边栏底部的图标按钮。
+- **保护官方升级**：检测到待安装的更新时会拒绝强制重启，并提示改用官方「立即安装并重启」（原因见下）。
+
+### 为什么入口不再放品牌字标旁边（v0.4 变更）
+
+v0.3 把按钮注册进 `sidebar.brand.name` 并给了 `priority: -1`。那个槽位是 `kind: "single"`，同一时刻只有一个注册生效——`-1` **会盖掉官方的品牌单元**（`@deepseek-ai/dsh-client-ui-brand-official` 在 0 位）。为了一个按钮去遮蔽官方 UI 是不必要的风险，而且 `sidebar.panellist` 本来就是壳体文档里「面板选择行」的正式座位：宿主自己画按钮，点击后 `selectPanel(id)` 打开 `key` 相同的 `main` 面板。所以 v0.4 改用 `main` + `sidebar.panellist`（order 1，紧挨「插件」），完全不动品牌行。
+
+### 为什么强制重启会破坏官方升级（已修复）
+
+DSH 的更新协调器（`DesktopUpdateCoordinator`）在构造时设了：
+
+```js
+this.updater.autoDownload = false;
+this.updater.autoInstallOnAppQuit = false;   // ← 关键
+```
+
+也就是说**下载完的更新不会在退出时自动安装**，安装只有一条路：应用内「立即安装并重启」→ `beforeRestart()` → `host.updateTasks("lock")`（这一刻起所有 HTTP 请求都会被回 **503**）→ 关窗 → `host.stop(true)` **要求干净退出** → `updater.quitAndInstall(true, true)`。
+
+而本插件的重启是 `taskkill /F /T` 强杀：它绕过了整条官方流程，所以
+
+- 待安装的更新会一直躺在 `…\@deepseek-aidsh-desktop-updater\pending\` 里装不上；
+- 如果强杀恰好落在官方安装窗口内，`host.stop(true)` 的干净退出契约被破坏，官方升级直接失败（`stop-failed`），并且鉴权锁会让之后一段时间所有请求都是 503。
+
+v0.4 在三层都加了保护，插件不会再 sabotage 升级：
+
+| 层 | 行为 |
+|---|---|
+| Node 半进程 | 启动 helper 前读 `pending/update-info.json`；存在就返回 **409 `update-pending`**，并在 body 里带上版本号 |
+| helper | 临杀前再检查一次该标记（防止「点了已确认 → 下载刚好完成」的竞态），命中就直接中止、不杀 |
+| 面板 | 顶部显示黄色警告条 + 禁用按钮，明确告诉你用官方升级 |
+
+需要强制绕过时（不推荐）：`POST /quick-restart/api/restart`，body 传 `{"force":true}`。
 
 ## 安装
 
@@ -83,8 +112,8 @@ Client (web)  ──POST /quick-restart/api/restart──▶  Node 半进程 (co
 
 HTTP 接口（POST）：
 
-- `/quick-restart/api/restart` — 触发重启（body `{"dryRun":true}` 可演练）
-- `/quick-restart/api/status` — 状态（exe 路径、helper 是否存在等）
+- `/quick-restart/api/restart` — 触发重启（body `{"dryRun":true}` 可演练；`{"force":true}` 可绕过待更新保护）
+- `/quick-restart/api/status` — 状态（exe 路径、helper 是否存在、`pendingUpdate` 等）
 - `/quick-restart/api/logs` — 上述日志的尾部
 
 ### 报错对照
@@ -93,11 +122,13 @@ HTTP 接口（POST）：
 |---|---|---|
 | `HTTP 405` | Node 半进程的路由没挂上（插件未被加载，或用了回调式 `ctx.inject` 写法），请求落到 SPA fallback | 确认 `dsh.profile.bundles` 与 `dependencies` 里都有 `dsh-quick-restart`，且 `node_modules/dsh-quick-restart` 可解析；改为模块级 `inject` + `ctx.effect` 注册 |
 | `HTTP 503` | **不是插件的问题**：桌面端正在下载/安装更新，`dsh-desktop-host` 的更新准入锁会给所有请求回裸 503，插件的路由根本没收到请求 | 等更新完成再点；v0.3.1 起客户端会自动退避重试（最多 6 次），并在对话框里显示「应用正在准备更新」 |
+| `update-pending`（409） | 有下载好但没安装的更新。强制重启走不到官方安装流程，会把升级卡住 | 用 DSH 官方「立即安装并重启」；装完标记消失，按钮自动恢复 |
 
 ## 已知限制
 
 - 仅支持 Windows（强杀/重启逻辑依赖 `taskkill`、WMI 与 Job Object 语义）。
-- 若 DSH 未来修改进程模型（Job Object、进程名），需要同步更新 helper。
+- 若 DSH 未来修改进程模型（Job Object、进程名）或更新流程，需要同步更新 helper 与待更新检测。
+- 本插件无法执行官方升级：`autoInstallOnAppQuit = false` 时安装只能由 Electron 主进程的 `quitAndInstall` 完成。
 
 ## License
 

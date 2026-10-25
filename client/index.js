@@ -6,18 +6,17 @@
  * and this file is a `window.__ModuleLoader__.load({ id, factory })` bundle —
  * the exact shape dsh-mcp-connector and dsh-better-sidebar ship.
  *
- * UI (no panel — clicking never switches the centre column):
- *   - `sidebar.footer.action` id "quick-restart": an icon button in the
- *     sidebar foot beside Settings. We own this button's click handler.
- *   - `shell.overlay` id "quick-restart": the confirmation dialog.
+ * UI placement (v0.4): a row in `sidebar.panellist` directly under the shipped
+ * 「插件」 entry (order 1), addressing a `main` panel that owns the restart
+ * action, the live status and the recent helper log.
  *
- * Why not `sidebar.panellist`: that seat is a *panel selector*. Its catalog
- * says "Each list id addresses the matching main panel; the sidebar owns the
- * button", and `ownerProps` is only `{ size, active }` — the host draws the
- * button and clicking it selects the matching `main` panel. A row there can
- * never be a plain action, so it necessarily opens a panel.
- * `sidebar.footer.action` is the seat for actions: "Optional actions beside
- * Settings at the sidebar foot", ownerProps `{ wide }`, click handled by us.
+ * WHY NOT THE BRAND ROW ANY MORE: v0.3 registered into `sidebar.brand.name`
+ * with `priority: -1`, which SHADOWS the official wordmark cell. The slot is
+ * `kind: "single"`, so exactly one live registration renders, and shadowing the
+ * official brand plugin is needless risk for zero benefit. `sidebar.panellist`
+ * is the seat the shell itself documents for panel-selector rows: it draws the
+ * button and `ctx.layout.selectPanel(id)` opens the `main` panel whose `key`
+ * equals that id.
  */
 window.__ModuleLoader__.load({
 	id: "dsh-quick-restart",
@@ -31,70 +30,63 @@ window.__ModuleLoader__.load({
 		/** Client services this half consumes: the slot system. */
 		const inject = ["slots"];
 
-		const RESTART_PATH = "quick-restart/api/restart";
+		const API_BASE = "quick-restart/api/";
+		const PANEL_ID = "quick-restart";
 		const STYLE_ID = "dsh-quick-restart-style";
 		/**
 		 * Bumped whenever this file changes in a user-visible way. It rides along
 		 * with every restart request and lands in the host's spawn log, so that log
 		 * alone answers "which client bundle is the page really running?".
 		 */
-		const CLIENT_VERSION = "9";
+		const CLIENT_VERSION = "10";
 		/** If the app is still alive this long after arming, say so. */
 		const STUCK_AFTER_MS = 20000;
+		/** 409 "update-pending" is terminal for this attempt: never retried. */
+		const UPDATE_PENDING = "update-pending";
 		/**
 		 * The desktop shell answers a bare 503 to EVERY request while an update
 		 * task holds request admission (`installDesktopUpdateTaskControl` in
 		 * dsh-desktop-host writes `writeHead(503)` and nothing else). The plugin's
-		 * route is never reached, so retrying is the only correct response: the
-		 * lock is released when the update finishes.
+		 * route is never reached, so retrying is the only correct response.
 		 */
 		const RETRYABLE_STATUSES = [429, 502, 503, 504];
 		const RETRY_ATTEMPTS = 6;
 		const RETRY_BASE_MS = 800;
-		/**
-		 * The official wordmark, resolved once from the shared client primitives
-		 * package — the very component the shipped brand plugin renders — so the
-		 * sidebar keeps its real artwork while we append our own ⟳ after it.
-		 * Null means those primitives are unavailable and we take the fallback seat.
-		 */
-		const brandWordmark = loadBrandWordmark();
 
 		const CSS = [
-			".dshQuickRestartBtn{display:inline-flex;align-items:center;gap:6px;max-width:132px;height:28px;padding:0 8px;box-sizing:border-box;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary,inherit);font:inherit;font-size:12px;cursor:pointer}",
-			".dshQuickRestartBtn:hover:not(:disabled){background:rgba(127,127,127,.16);color:var(--dsw-alias-label-primary,inherit)}",
-			".dshQuickRestartBtn:disabled{opacity:.55;cursor:default}",
-			".dshQuickRestartBtnLabel{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
-			/* The brand row: the shipped wordmark may shrink when the sidebar is
-			   narrow, but our ⟳ keeps its size so it is never clipped away. */
-			".dshQuickRestartBrandArt{flex:0 1 auto;min-width:0}",
-			".dshQuickRestartBrandBtn{display:inline-flex;align-items:center;justify-content:center;flex:none;width:24px;height:24px;padding:0;border:0;border-radius:7px;background:transparent;color:var(--dsh-qr-sub,#b3b9c2);cursor:pointer}",
-			".dshQuickRestartBrandBtn:hover{background:rgba(127,127,127,.22);color:var(--dsh-qr-text,#f4f5f7)}",
-			".dshQuickRestartBackdrop{position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.42);pointer-events:auto}",
-			/* Glyph paint is pinned twice on purpose. Inline styles (see the dialog
-			   component) can be dropped when a host wrapper clones the element, and
-			   an inherited `-webkit-text-fill-color` beats a plain `color` — either
-			   way the copy went invisible. These !important rules are fed by the
-			   --dsh-qr-* custom properties this plugin writes onto <html> from the
-			   detected theme, so the dialog stays legible in every theme. */
-			".dshQuickRestartCard{width:min(430px,calc(100vw - 48px));box-sizing:border-box;display:flex;flex-direction:column;gap:12px;padding:22px 22px 18px;border-radius:14px;border:1px solid var(--dsh-qr-border,rgba(127,127,127,.35))!important;background:var(--dsh-qr-card,#ffffff)!important;color:var(--dsh-qr-text,#1b1d21)!important;-webkit-text-fill-color:var(--dsh-qr-text,#1b1d21)!important;box-shadow:0 18px 48px rgba(0,0,0,.32)!important}",
-			".dshQuickRestartCard h3{display:flex;align-items:center;gap:9px;margin:0;font-size:15px;font-weight:600;color:var(--dsh-qr-text,#1b1d21)!important;-webkit-text-fill-color:var(--dsh-qr-text,#1b1d21)!important}",
-			".dshQuickRestartCard p{margin:0;font-size:13px;line-height:1.65;color:var(--dsh-qr-sub,#5b626c)!important;-webkit-text-fill-color:var(--dsh-qr-sub,#5b626c)!important;opacity:1}",
-			".dshQuickRestartMsg{min-height:16px;font-size:12px;line-height:1.5;color:var(--dsh-qr-sub,#5b626c);-webkit-text-fill-color:currentColor!important}",
-			'.dshQuickRestartMsg[data-phase="error"]{color:var(--dsh-qr-error,#c0392b)!important}',
-			'.dshQuickRestartMsg[data-phase="stuck"]{color:var(--dsh-qr-warn,#8a5d00)!important}',
-			".dshQuickRestartRow{display:flex;justify-content:flex-end;gap:8px;margin-top:2px}",
-			".dshQuickRestartGhost{padding:7px 14px;border-radius:9px;border:1px solid var(--dsh-qr-border,rgba(127,127,127,.4));background:transparent;color:var(--dsh-qr-text,#1b1d21)!important;-webkit-text-fill-color:var(--dsh-qr-text,#1b1d21)!important;font:inherit;font-size:13px;cursor:pointer}",
-			".dshQuickRestartGhost:hover:not(:disabled){background:rgba(127,127,127,.14)}",
-			".dshQuickRestartPrimary{display:inline-flex;align-items:center;gap:7px;padding:7px 14px;border-radius:9px;border:1px solid transparent;background:var(--dsh-qr-brand,#2f6feb);color:#fff!important;-webkit-text-fill-color:#fff!important;font:inherit;font-size:13px;font-weight:500;cursor:pointer}",
-			".dshQuickRestartPrimary:hover:not(:disabled){filter:brightness(1.08)}",
-			".dshQuickRestartGhost:disabled,.dshQuickRestartPrimary:disabled{opacity:.55;cursor:default}",
-			".dshQuickRestartSpin{animation:dshQuickRestartSpin 1s linear infinite}",
-			"@keyframes dshQuickRestartSpin{to{transform:rotate(360deg)}}",
+			".dshQrPanel{display:flex;flex-direction:column;gap:14px;padding:18px 20px;box-sizing:border-box;max-width:760px;color:var(--dsw-alias-label-primary,inherit);font-size:13px;line-height:1.6}",
+			".dshQrTitle{display:flex;align-items:center;gap:9px;margin:0;font-size:16px;font-weight:600}",
+			".dshQrHint{margin:0;color:var(--dsw-alias-label-secondary,inherit)}",
+			".dshQrCard{display:flex;flex-direction:column;gap:10px;padding:14px 16px;border-radius:12px;border:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.28));background:var(--dsw-alias-bg-secondary,rgba(127,127,127,.08))}",
+			".dshQrRow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}",
+			".dshQrPrimary{display:inline-flex;align-items:center;gap:8px;padding:8px 16px;border-radius:9px;border:1px solid transparent;background:#2f6feb;color:#fff;font:inherit;font-size:13px;font-weight:500;cursor:pointer}",
+			".dshQrPrimary:hover:not(:disabled){filter:brightness(1.08)}",
+			".dshQrPrimary:disabled{opacity:.55;cursor:default}",
+			".dshQrGhost{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:9px;border:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.35));background:transparent;color:inherit;font:inherit;font-size:12px;cursor:pointer}",
+			".dshQrGhost:hover:not(:disabled){background:rgba(127,127,127,.14)}",
+			".dshQrMeta{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:12px;color:var(--dsw-alias-label-secondary,inherit)}",
+			".dshQrMetaKey{opacity:.75}",
+			".dshQrMetaVal{font-family:ui-monospace,Consolas,monospace;word-break:break-all}",
+			".dshQrWarn{display:flex;gap:8px;padding:10px 12px;border-radius:9px;border:1px solid rgba(231,185,84,.5);background:rgba(231,185,84,.12);color:#e7b954;font-size:12px}",
+			".dshQrErr{color:#ff8078}",
+			".dshQrOk{color:#3fb950}",
+			".dshQrLog{margin:0;max-height:220px;overflow:auto;padding:10px 12px;border-radius:9px;background:rgba(0,0,0,.24);color:var(--dsw-alias-label-secondary,inherit);font-family:ui-monospace,Consolas,monospace;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-all}",
+			".dshQrSpin{animation:dshQrSpin 1s linear infinite}",
+			"@keyframes dshQrSpin{to{transform:rotate(360deg)}}",
+			".dshQrBackdrop{position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.42)}",
+			".dshQrDialog{width:min(430px,calc(100vw - 48px));box-sizing:border-box;display:flex;flex-direction:column;gap:12px;padding:22px;border-radius:14px;border:1px solid var(--dsh-qr-border,rgba(127,127,127,.35));background:var(--dsh-qr-card,#1f2126);color:var(--dsh-qr-text,#f4f5f7);-webkit-text-fill-color:var(--dsh-qr-text,#f4f5f7);box-shadow:0 18px 48px rgba(0,0,0,.42)}",
+			".dshQrDialog h3{display:flex;align-items:center;gap:9px;margin:0;font-size:15px;font-weight:600;color:var(--dsh-qr-text,#f4f5f7);-webkit-text-fill-color:var(--dsh-qr-text,#f4f5f7)}",
+			".dshQrDialog p{margin:0;font-size:13px;line-height:1.65;color:var(--dsh-qr-sub,#b3b9c2);-webkit-text-fill-color:var(--dsh-qr-sub,#b3b9c2)}",
+			".dshQrMsg{min-height:16px;font-size:12px;line-height:1.5;color:var(--dsh-qr-sub,#b3b9c2)}",
+			'.dshQrMsg[data-phase="error"]{color:var(--dsh-qr-error,#ff8078)}',
+			'.dshQrMsg[data-phase="stuck"]{color:var(--dsh-qr-warn,#e7b954)}',
+			".dshQrActions{display:flex;justify-content:flex-end;gap:8px}",
+			".dshQrCancel{padding:7px 14px;border-radius:9px;border:1px solid var(--dsh-qr-border,rgba(127,127,127,.4));background:transparent;color:var(--dsh-qr-text,#f4f5f7);-webkit-text-fill-color:var(--dsh-qr-text,#f4f5f7);font:inherit;font-size:13px;cursor:pointer}",
+			".dshQrCancel:disabled,.dshQrPrimary:disabled{opacity:.55;cursor:default}",
 		].join("\n");
 
 		function installStyles() {
 			if (document.getElementById(STYLE_ID) !== null) return () => {};
-			applyPaletteVars(readPalette());
 			const style = document.createElement("style");
 			style.id = STYLE_ID;
 			style.textContent = CSS;
@@ -104,26 +96,44 @@ window.__ModuleLoader__.load({
 			};
 		}
 
-		/** Same-origin route, robust to a reverse-proxy base path. */
-		function apiHref() {
+		/** Same-origin API URL, robust to a reverse-proxy base path. */
+		function apiHref(method) {
 			const base = new URL(document.baseURI || window.location.href);
 			base.search = "";
 			base.hash = "";
 			if (!base.pathname.endsWith("/")) base.pathname += "/";
-			base.pathname += RESTART_PATH;
+			base.pathname += API_BASE + method;
 			return base.href;
 		}
 
 		function statusMessage(status) {
-			if (status === 503) {
-				return "应用正在准备更新或安装，请求被暂时锁定（HTTP 503）。等更新完成后重试即可。";
-			}
+			if (status === 503) return "应用正在准备更新或安装，请求被暂时锁定（HTTP 503）。等更新完成后重试即可。";
 			if (status === 502 || status === 504) return "宿主暂时无响应（HTTP " + status + "），请稍后重试。";
 			if (status === 429) return "请求过于频繁（HTTP 429），请稍后重试。";
 			return "HTTP " + status;
 		}
 
 		const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+		/** One POST, surfacing the structured error code the Node half returns. */
+		async function postJson(method, payload) {
+			const response = await fetch(apiHref(method), {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(payload ?? {}),
+			});
+			const parsed = await response.json().catch(() => null);
+			if (!response.ok || parsed === null || parsed.ok !== true) {
+				const code = parsed && parsed.error && parsed.error.code ? parsed.error.code : statusMessage(response.status);
+				const error = new Error(
+					parsed && parsed.error && parsed.error.message ? parsed.error.message : statusMessage(response.status),
+				);
+				error.code = code;
+				error.pendingUpdate = parsed && parsed.error ? parsed.error.pendingUpdate : undefined;
+				throw error;
+			}
+			return parsed.value;
+		}
 
 		/**
 		 * POST the restart request, retrying while the desktop shell holds its
@@ -134,13 +144,10 @@ window.__ModuleLoader__.load({
 			for (let attempt = 1; ; attempt += 1) {
 				let response;
 				try {
-					response = await fetch(apiHref(), {
+					response = await fetch(apiHref("restart"), {
 						method: "POST",
 						headers: { "content-type": "application/json" },
-						body: JSON.stringify({
-							client: CLIENT_VERSION,
-							theme: readPalette().dark ? "dark" : "light",
-						}),
+						body: JSON.stringify({ client: CLIENT_VERSION }),
 					});
 				} catch (error) {
 					if (attempt >= RETRY_ATTEMPTS) throw error;
@@ -159,115 +166,16 @@ window.__ModuleLoader__.load({
 						parsed && parsed.error && parsed.error.message
 							? parsed.error.message
 							: statusMessage(response.status);
-					throw new Error(detail);
+					const error = new Error(detail);
+					error.code = parsed && parsed.error ? parsed.error.code : undefined;
+					error.pendingUpdate = parsed && parsed.error ? parsed.error.pendingUpdate : undefined;
+					throw error;
 				}
 				return parsed.value;
 			}
 		}
 
-		/** Parse "#rgb" / "#rrggbb" / "rgb(...)" / "rgba(...)" into [r,g,b]. */
-		function parseColor(text) {
-			const value = String(text ?? "").trim().toLowerCase();
-			const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/u.exec(value);
-			if (hex !== null) {
-				const digits = hex[1].length === 3 ? hex[1].split("").map((d) => d + d).join("") : hex[1];
-				return [0, 2, 4].map((offset) => Number.parseInt(digits.slice(offset, offset + 2), 16));
-			}
-			const fn = /^rgba?\(\s*([0-9.]+)[,\s]+([0-9.]+)[,\s]+([0-9.]+)/u.exec(value);
-			if (fn !== null) return [Number(fn[1]), Number(fn[2]), Number(fn[3])];
-			return null;
-		}
-
-		/**
-		 * Colours are computed here, never inherited from a token.
-		 *
-		 * The first dialog let the text fall back to `inherit` while its own card
-		 * background fell back to a hard-coded dark value: wherever the overlay
-		 * sits outside the themed subtree that is dark-on-dark — literally
-		 * invisible text. So read the app's real base surface, decide dark/light
-		 * from its luminance, and pin BOTH foreground and background explicitly.
-		 */
-		function readPalette() {
-			let raw = "";
-			try {
-				raw = getComputedStyle(document.documentElement).getPropertyValue("--dsw-alias-bg-base");
-			} catch (error) {
-				raw = "";
-			}
-			if (String(raw).trim() === "" && document.body !== null && document.body !== undefined) {
-				try {
-					raw = getComputedStyle(document.body).backgroundColor;
-				} catch (error) {
-					raw = "";
-				}
-			}
-			const rgb = parseColor(raw);
-			const dark = rgb === null ? true : (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 255000 < 0.5;
-			return dark
-				? {
-						dark: true,
-						card: "#1f2126",
-						brand: "#4f8ef7",
-						text: "#f4f5f7",
-						sub: "#b3b9c2",
-						border: "rgba(255,255,255,.18)",
-						ghost: "rgba(255,255,255,.28)",
-						error: "#ff8078",
-						warn: "#e7b954",
-					}
-				: {
-						dark: false,
-						card: "#ffffff",
-						brand: "#2f6feb",
-						text: "#1b1d21",
-						sub: "#5b626c",
-						border: "rgba(0,0,0,.15)",
-						ghost: "rgba(0,0,0,.24)",
-						error: "#c0392b",
-						warn: "#8a5d00",
-					};
-		}
-
-		/** Custom properties the stylesheet's !important paint rules read. */
-		const PALETTE_VARS = {
-			"--dsh-qr-card": "card",
-			"--dsh-qr-text": "text",
-			"--dsh-qr-sub": "sub",
-			"--dsh-qr-border": "border",
-			"--dsh-qr-brand": "brand",
-			"--dsh-qr-error": "error",
-			"--dsh-qr-warn": "warn",
-		};
-
-		/**
-		 * Publish the detected palette on <html>. Doing this in addition to the
-		 * element's own inline styles means the dialog stays legible even when a
-		 * host wrapper clones the element and drops its style prop — and it lets
-		 * the stylesheet beat any inherited `-webkit-text-fill-color` with
-		 * !important, which is what kept the copy invisible.
-		 */
-		function applyPaletteVars(palette) {
-			const root = document.documentElement;
-			if (root === null || root === undefined || root.style === undefined) return;
-			if (typeof root.style.setProperty !== "function") return;
-			for (const [name, key] of Object.entries(PALETTE_VARS)) {
-				const value = palette[key];
-				if (value === null || value === undefined || String(value) === "") continue;
-				try {
-					root.style.setProperty(name, String(value));
-				} catch (error) {
-					// A read-only style object must never break the dialog.
-				}
-			}
-		}
-
-		/** Set once the shell.overlay seat really exists (see store.open fallback). */
-		let overlaySeatReady = false;
-
-		/**
-		 * Tiny shared store: the footer button and the overlay are separate slot
-		 * components, so they cannot share React state directly.
-		 */
+		/** Tiny shared store: the panel and the shell overlay are separate cells. */
 		const store = (() => {
 			let state = { open: false, phase: "idle", message: "" };
 			const listeners = new Set();
@@ -300,28 +208,11 @@ window.__ModuleLoader__.load({
 					emit();
 				},
 				isBusy: () => state.phase === "arming" || state.phase === "armed",
-				/**
-				 * Ask first, then restart. The styled dialog lives in shell.overlay;
-				 * if that seat never materialised, fall back to the native confirm so
-				 * that a click can never silently do nothing.
-				 */
 				open() {
 					if (api.isBusy()) return;
 					clearStuck();
-					// Re-detect on every open: the user may have flipped the theme.
-					applyPaletteVars(readPalette());
-					if (!overlaySeatReady) {
-						const confirmed =
-							typeof window.confirm !== "function" ||
-							window.confirm(
-								"重启 DeepSeek Harness？\n应用会关闭并自动重新打开，正在进行的回答会被中断。",
-							);
-						if (confirmed) api.confirm();
-						return;
-					}
 					api.patch({ open: true, phase: "idle", message: "" });
 				},
-				/** Cancel — never allowed to interrupt an armed restart. */
 				close() {
 					if (api.isBusy()) return;
 					clearStuck();
@@ -331,8 +222,6 @@ window.__ModuleLoader__.load({
 					if (api.isBusy()) return;
 					api.patch({ phase: "arming", message: "正在准备重启…" });
 					const onRetry = (attempt, status) => {
-						// The shell's update admission lock is the common cause; say so
-						// instead of surfacing a bare HTTP 503.
 						const reason =
 							status === 503
 								? "应用正在准备更新，请求被暂时锁定"
@@ -346,15 +235,11 @@ window.__ModuleLoader__.load({
 					};
 					requestRestart(onRetry).then(
 						() => {
-							api.patch({
-								phase: "armed",
-								message: "应用将在约 2 秒后关闭并自动重新打开…",
-							});
+							api.patch({ phase: "armed", message: "应用将在约 2 秒后关闭并自动重新打开…" });
 							clearStuck();
 							stuckTimer = setTimeout(() => {
 								stuckTimer = null;
 								if (state.phase !== "armed") return;
-								// Still alive: let the user try again instead of lying.
 								api.patch({
 									phase: "stuck",
 									message: "应用似乎仍在运行。可以再点一次「立即重启」，或手动重启应用。",
@@ -364,7 +249,10 @@ window.__ModuleLoader__.load({
 						(error) => {
 							api.patch({
 								phase: "error",
-								message: "重启失败：" + (error && error.message ? error.message : String(error)),
+								message:
+									error && error.code === UPDATE_PENDING
+										? error.message
+										: "重启失败：" + (error && error.message ? error.message : String(error)),
 							});
 						},
 					);
@@ -373,16 +261,9 @@ window.__ModuleLoader__.load({
 			return api;
 		})();
 
-		/** Re-render on store changes. */
 		function useRestartState() {
 			const [state, setState] = React.useState(store.get());
-			React.useEffect(
-				() =>
-					store.subscribe(() => {
-						setState(store.get());
-					}),
-				[],
-			);
+			React.useEffect(() => store.subscribe(() => setState(store.get())), []);
 			return state;
 		}
 
@@ -397,7 +278,7 @@ window.__ModuleLoader__.load({
 					viewBox: "0 0 16 16",
 					fill: "none",
 					"aria-hidden": "true",
-					className: spinning ? "dshQuickRestartSpin" : undefined,
+					className: spinning ? "dshQrSpin" : undefined,
 					style: { display: "block", flex: "none" },
 				},
 				React.createElement("path", {
@@ -416,27 +297,136 @@ window.__ModuleLoader__.load({
 			);
 		}
 
-		/**
-		 * sidebar.footer.action cell (ownerProps: { wide }) — the degraded seat, used
-		 * only when the brand wordmark is unavailable. Icon-only in both the expanded
-		 * sidebar and the 56px rail: the entry is the ⟳ glyph, never a text label.
-		 */
-		function SidebarAction() {
-			useRestartState();
+		/** sidebar.panellist row: the host draws it and selects our main panel. */
+		function SidebarRow(props) {
+			const size = props && typeof props.size === "number" ? props.size : 18;
+			return React.createElement(RestartIcon, { size });
+		}
+
+		/** main panel: status, the action, and the recent helper log. */
+		function RestartPanel() {
+			const restart = useRestartState();
+			const [status, setStatus] = React.useState(null);
+			const [statusError, setStatusError] = React.useState("");
+			const [log, setLog] = React.useState("");
+			const spinning = restart.phase === "arming" || restart.phase === "armed";
+
+			const refresh = React.useCallback(() => {
+				postJson("status")
+					.then((value) => {
+						setStatus(value);
+						setStatusError("");
+					})
+					.catch((error) => setStatusError(error && error.message ? error.message : String(error)));
+				postJson("logs")
+					.then((value) => {
+						const tail = value && typeof value.helper === "string" ? value.helper : "";
+						setLog(tail.split("\n").slice(-40).join("\n"));
+					})
+					.catch(() => setLog(""));
+			}, []);
+
+			React.useEffect(() => {
+				refresh();
+				const timer = setInterval(refresh, 15000);
+				return () => clearInterval(timer);
+			}, [refresh]);
+
+			const pending = status && status.pendingUpdate ? status.pendingUpdate : null;
+			const canRestart = !pending;
+
+			/** The panel never restarts on its own: it opens the shared confirmation
+			 *  dialog so both entry points behave identically. */
+			const onRestart = () => store.open();
+
 			return React.createElement(
-				"button",
-				{
-					type: "button",
-					className: "dshQuickRestartBtn",
-					title: "一键重启 DeepSeek Harness",
-					"aria-label": "一键重启 DeepSeek Harness",
-					onClick: () => store.open(),
-				},
-				React.createElement(RestartIcon, { size: 18 }),
+				"div",
+				{ className: "dshQrPanel" },
+				React.createElement(
+					"h2",
+					{ className: "dshQrTitle" },
+					React.createElement(RestartIcon, { size: 18, spin: spinning }),
+					"一键重启",
+				),
+				React.createElement(
+					"p",
+					{ className: "dshQrHint" },
+					"关闭 DeepSeek Harness 并自动重新打开，实测约 2 秒。正在进行的回答会被中断，已保存的会话不受影响。",
+				),
+				pending !== null
+					? React.createElement(
+							"div",
+							{ className: "dshQrWarn" },
+							React.createElement(RestartIcon, { size: 14 }),
+							React.createElement(
+								"span",
+								null,
+								"检测到待安装的更新" +
+									(pending.version ? " v" + pending.version : "") +
+									"。请用官方「立即安装并重启」完成升级 —— 强制重启走不到更新安装流程，会导致升级装不上。",
+							),
+						)
+					: null,
+				React.createElement(
+					"div",
+					{ className: "dshQrCard" },
+					React.createElement(
+						"div",
+						{ className: "dshQrRow" },
+						React.createElement(
+							"button",
+							{
+								type: "button",
+								className: "dshQrPrimary",
+								disabled: !canRestart,
+								onClick: onRestart,
+							},
+							React.createElement(RestartIcon, { size: 15, spin: spinning }),
+							spinning ? "正在重启…" : "立即重启",
+						),
+						React.createElement(
+							"button",
+							{ type: "button", className: "dshQrGhost", onClick: refresh },
+							"刷新状态",
+						),
+					),
+					restart.phase === "error" && restart.message !== ""
+						? React.createElement("div", { className: "dshQrErr" }, restart.message)
+						: null,
+					statusError !== "" ? React.createElement("div", { className: "dshQrErr" }, statusError) : null,
+					status !== null
+						? React.createElement(
+								"div",
+								{ className: "dshQrMeta" },
+								React.createElement("span", { className: "dshQrMetaKey" }, "目标程序"),
+								React.createElement("span", { className: "dshQrMetaVal" }, String(status.image ?? "—")),
+								React.createElement("span", { className: "dshQrMetaKey" }, "helper"),
+								React.createElement(
+									"span",
+									{ className: "dshQrMetaVal" },
+									(status.helperExists ? "就绪 · " : "缺失 · ") + String(status.helper ?? ""),
+								),
+								React.createElement("span", { className: "dshQrMetaKey" }, "armDelay"),
+								React.createElement("span", { className: "dshQrMetaVal" }, String(status.armDelayMs ?? "—") + " ms"),
+								React.createElement("span", { className: "dshQrMetaKey" }, "待安装更新"),
+								React.createElement(
+									"span",
+									{ className: "dshQrMetaVal" },
+									pending !== null ? "v" + String(pending.version ?? "?") + "（请用官方升级）" : "无",
+								),
+							)
+						: null,
+				),
+				React.createElement(
+					"div",
+					null,
+					React.createElement("p", { className: "dshQrHint" }, "最近记录（helper 日志尾部）"),
+					React.createElement("pre", { className: "dshQrLog" }, log === "" ? "（暂无记录）" : log),
+				),
 			);
 		}
 
-		/** shell.overlay cell: the confirmation dialog. */
+		/** shell.overlay cell: the confirmation dialog opened from the panel. */
 		function ConfirmOverlay() {
 			const state = useRestartState();
 			const open = state.open === true;
@@ -450,182 +440,72 @@ window.__ModuleLoader__.load({
 					}
 				};
 				window.addEventListener("keydown", onKeyDown, true);
-				return () => {
-					window.removeEventListener("keydown", onKeyDown, true);
-				};
+				return () => window.removeEventListener("keydown", onKeyDown, true);
 			}, [open]);
 
 			if (!open) return null;
 
 			const busy = state.phase === "arming" || state.phase === "armed";
-			// Explicit colours (see readPalette): the dialog must stay readable in
-			// both themes and wherever this overlay is mounted.
-			const palette = readPalette();
-			const messageColor =
-				state.phase === "error" ? palette.error : state.phase === "stuck" ? palette.warn : palette.sub;
 			return React.createElement(
 				"div",
 				{
-					className: "dshQuickRestartBackdrop",
+					className: "dshQrBackdrop",
 					onMouseDown: (event) => {
 						if (event.target === event.currentTarget) store.close();
 					},
 				},
 				React.createElement(
 					"div",
-					{
-						className: "dshQuickRestartCard",
-						role: "dialog",
-						"aria-modal": "true",
-						style: {
-							background: palette.card,
-							color: palette.text,
-							// Belt and braces: an explicit paint colour for the glyphs
-							// themselves, so no inherited `color`/`text-fill-color` rule
-							// can blank the text out, and a matching color-scheme so
-							// native bits (caret, selection) follow the card.
-							WebkitTextFillColor: palette.text,
-							colorScheme: palette.dark ? "dark" : "light",
-							borderColor: palette.border,
-							boxShadow: palette.dark
-								? "0 18px 48px rgba(0,0,0,.5)"
-								: "0 18px 48px rgba(15,23,42,.18)",
-						},
-					},
+					{ className: "dshQrDialog", role: "dialog", "aria-modal": "true" },
 					React.createElement(
 						"h3",
-						{ style: { color: palette.text, WebkitTextFillColor: palette.text } },
+						null,
 						React.createElement(RestartIcon, { size: 17, spin: state.phase === "arming" }),
 						"重启 DeepSeek Harness？",
 					),
 					React.createElement(
 						"p",
-						{ style: { color: palette.sub, WebkitTextFillColor: palette.sub, opacity: 1 } },
+						null,
 						"应用会关闭并自动重新打开。正在进行的回答会被中断，已保存的会话不受影响。",
 					),
 					React.createElement(
 						"div",
-						{
-							className: "dshQuickRestartMsg",
-							"data-phase": state.phase,
-							style: { color: messageColor, WebkitTextFillColor: messageColor, opacity: 1 },
-						},
+						{ className: "dshQrMsg", "data-phase": state.phase },
 						state.message,
 					),
 					React.createElement(
 						"div",
-						{ className: "dshQuickRestartRow" },
+						{ className: "dshQrActions" },
 						React.createElement(
 							"button",
-							{
-								type: "button",
-								className: "dshQuickRestartGhost",
-								disabled: busy,
-								style: {
-									color: palette.text,
-									WebkitTextFillColor: palette.text,
-									borderColor: palette.ghost,
-								},
-								onClick: () => store.close(),
-							},
+							{ type: "button", className: "dshQrCancel", disabled: busy, onClick: () => store.close() },
 							"取消",
 						),
 						React.createElement(
 							"button",
-							{
-								type: "button",
-								className: "dshQuickRestartPrimary",
-								disabled: busy,
-								style: { color: "#ffffff", WebkitTextFillColor: "#ffffff" },
-								onClick: () => store.confirm(),
-							},
+							{ type: "button", className: "dshQrPrimary", disabled: busy, onClick: () => store.confirm() },
 							React.createElement(RestartIcon, { size: 14, spin: state.phase === "arming" }),
-							state.phase === "arming" ? "正在重启…" : state.phase === "stuck" ? "重试重启" : "立即重启",
+							state.phase === "arming" ? "正在重启…" : "立即重启",
 						),
 					),
-				),
-			);
-		}
-
-		/** Resolve the shipped wordmark component, or null when it is not there. */
-		function loadBrandWordmark() {
-			try {
-				const primitives = require("@deepseek-ai/dsh-client-ui-primitives");
-				const wordmark = primitives === null || primitives === undefined ? null : primitives.BrandWordmark;
-				return typeof wordmark === "function" ? wordmark : null;
-			} catch (error) {
-				console.warn("[dsh-quick-restart] brand primitives unavailable, using the footer seat", error);
-				return null;
-			}
-		}
-
-		/**
-		 * sidebar.brand.name cell: the official wordmark, then our ⟳ right after it.
-		 *
-		 * The shell renders this cell inside a button that starts a new session, so
-		 * every pointer event on ours is swallowed — otherwise asking for a restart
-		 * would also open a fresh session.
-		 */
-		function BrandNameRow() {
-			useRestartState();
-			const swallow = (event) => {
-				if (event === null || event === undefined) return;
-				if (typeof event.stopPropagation === "function") event.stopPropagation();
-				if (typeof event.preventDefault === "function") event.preventDefault();
-			};
-			return React.createElement(
-				React.Fragment,
-				null,
-				React.createElement(brandWordmark, { includeMark: false, className: "dshQuickRestartBrandArt" }),
-				React.createElement(
-					"button",
-					{
-						type: "button",
-						className: "dshQuickRestartBrandBtn",
-						title: "一键重启 DeepSeek Harness",
-						"aria-label": "一键重启 DeepSeek Harness",
-						tabIndex: -1,
-						onPointerDown: swallow,
-						onMouseDown: swallow,
-						onClick: (event) => {
-							swallow(event);
-							store.open();
-						},
-					},
-					React.createElement(RestartIcon, { size: 18 }),
 				),
 			);
 		}
 
 		function installSlots(ctx) {
-			if (brandWordmark === null) {
-				// Nothing to keep the wordmark with: fall back to the sidebar-foot
-				// action so the entry still exists instead of doing nothing.
-				ctx.slots.inject("sidebar.footer.action", () =>
-					ctx.slots.register(
-						{ name: "sidebar.footer.action", id: "quick-restart", order: 5, label: "一键重启" },
-						SidebarAction,
-					),
-				);
-			} else {
-				// Preferred seat: inside the brand row, right after deepseekHARNESS.
-				// The shell only mounts that row while the sidebar is expanded.
-				// A `single` seat renders the LOWEST live priority, and registering
-				// at a taken priority throws — the shipped brand entry sits at 0,
-				// so only a negative priority shadows it.
-				ctx.slots.inject("sidebar.brand.name", () =>
-					ctx.slots.register({ name: "sidebar.brand.name", id: "quick-restart", priority: -1 }, BrandNameRow),
-				);
-			}
+			// `main` must exist before the panellist row: the shell refuses to select
+			// a row whose panel is missing.
+			ctx.slots.inject("main", () =>
+				ctx.slots.register({ name: "main", key: PANEL_ID }, RestartPanel),
+			);
+			// Order 1 sits immediately below the shipped 「插件」 entry (order 0).
+			ctx.slots.inject("sidebar.panellist", () =>
+				ctx.slots.register({ name: "sidebar.panellist", id: PANEL_ID, order: 1, label: "一键重启" }, SidebarRow),
+			);
 			// The confirmation dialog, above the whole shell.
-			ctx.slots.inject("shell.overlay", () => {
-				overlaySeatReady = true;
-				const dispose = ctx.slots.register({ name: "shell.overlay", id: "quick-restart" }, ConfirmOverlay);
-				return () => {
-					overlaySeatReady = false;
-					dispose();
-				};
-			});
+			ctx.slots.inject("shell.overlay", () =>
+				ctx.slots.register({ name: "shell.overlay", id: PANEL_ID }, ConfirmOverlay),
+			);
 		}
 
 		function apply(ctx) {

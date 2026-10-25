@@ -2,7 +2,7 @@
 
 **One-click restart plugin for the DeepSeek Harness desktop app (Windows).**
 
-Adds a ⟳ button next to the sidebar wordmark: click → confirm → the app closes and relaunches in about **2 seconds**.
+Adds a panel directly below the sidebar's 「插件」 (Plugins) entry: open it → restart the app in about **2 seconds**, with live status and the recent helper log.
 
 See the [Chinese README](README_ZH.md) for the full document (installation, architecture, troubleshooting).
 
@@ -10,9 +10,39 @@ See the [Chinese README](README_ZH.md) for the full document (installation, arch
 
 ## Features
 
-- One-click restart with a theme-aware confirmation dialog (dark/light auto-detected).
-- Full restart in ~2 s (an earlier PowerShell-based design took ~14 s).
-- Graceful fallback to a sidebar-foot icon button when the brand component is unavailable.
+- **Lives under 「插件」**: a `sidebar.panellist` row at order 1 (right below Plugins) addressing a `main` panel with status, the action and the log tail.
+- One-click restart in ~2 s (an earlier PowerShell-based design took ~14 s).
+- **Protects the official upgrade**: refuses to force-restart while a downloaded update is waiting, because only the official install flow can apply it.
+
+## Why the entry moved (v0.4)
+
+v0.3 registered into `sidebar.brand.name` with `priority: -1`. That slot is `kind: "single"` — exactly one live registration renders — so `-1` **shadowed the official wordmark cell** (`@deepseek-ai/dsh-client-ui-brand-official`, priority 0). Shadowing shipped UI for a button is needless risk; `sidebar.panellist` is the seat the shell documents for panel-selector rows (it draws the button, then `selectPanel(id)` opens the `main` panel whose `key` matches). v0.4 therefore uses `main` + `sidebar.panellist` and never touches the brand row.
+
+## Why force-restart broke the official upgrade (fixed)
+
+`DesktopUpdateCoordinator` sets:
+
+```js
+this.updater.autoDownload = false;
+this.updater.autoInstallOnAppQuit = false;   // ← the key line
+```
+
+A downloaded update is therefore **never installed on quit**. The only install path is the in-app flow: `beforeRestart()` → `host.updateTasks("lock")` (from that moment every HTTP request answers a bare **503**) → close the window → `host.stop(true)` which **requires a clean Host exit** → `updater.quitAndInstall(true, true)`.
+
+This plugin restarts with `taskkill /F /T`, which bypasses that entire flow, so:
+
+- a pending update stays in `…\@deepseek-aidsh-desktop-updater\pending\` forever;
+- a kill landing inside the official install window breaks the clean-exit contract → `stop-failed`, and the admission lock keeps answering 503 afterwards.
+
+v0.4 guards all three layers:
+
+| Layer | Behaviour |
+| --- | --- |
+| Node half | Reads `pending/update-info.json` before launching the helper; if present it answers **409 `update-pending`** with the version |
+| Helper | Re-checks the marker immediately before killing (covers "confirmed, then the download finished"), and aborts instead of killing |
+| Panel | Shows a warning and disables the button, pointing at the official install |
+
+Opt out (not recommended): `POST /quick-restart/api/restart` with `{"force":true}`.
 
 ## Install (Windows only)
 
@@ -34,8 +64,9 @@ Key measured facts behind the design (details in source comments):
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/quick-restart/api/restart` | Trigger the restart (body `{ "dryRun": true }` rehearses without killing anything) |
-| GET | `/quick-restart/api/status` | Status: exe path, helper presence, etc. |
+| POST | `/quick-restart/api/restart` | Trigger the restart (`{ "dryRun": true }` rehearses; `{ "force": true }` bypasses the pending-update guard) |
+| POST | `/quick-restart/api/status` | Status: exe path, helper presence, `pendingUpdate` |
+| POST | `/quick-restart/api/logs` | Tails of the spawn, helper and launcher logs |
 
 ## Troubleshooting
 
@@ -43,6 +74,7 @@ Key measured facts behind the design (details in source comments):
 | --- | --- | --- |
 | `HTTP 405` | The Node half's route is not mounted (plugin not loaded, or a callback-style `ctx.inject` was used), so the POST fell through to the SPA fallback | Make sure `dsh-quick-restart` is in both `dsh.profile.bundles` and `dependencies`, and that `node_modules/dsh-quick-restart` resolves; register with a module-level `inject` plus `ctx.effect` |
 | `HTTP 503` | **Not the plugin**: the desktop shell is downloading or installing an update, and `dsh-desktop-host`'s update admission lock answers every request with a bare 503 before routing | Wait for the update to finish. Since v0.3.1 the client backs off and retries (up to 6 attempts) and says so in the dialog |
+| `update-pending` (409) | A downloaded update is waiting to install, and a force-restart would strand it | Use the official 「立即安装并重启」; once installed the marker disappears and the button works again |
 
 ## Interactive diagram
 
