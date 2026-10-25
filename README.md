@@ -37,6 +37,13 @@ Key measured facts behind the design (details in source comments):
 | POST | `/quick-restart/api/restart` | Trigger the restart (body `{ "dryRun": true }` rehearses without killing anything) |
 | GET | `/quick-restart/api/status` | Status: exe path, helper presence, etc. |
 
+## Troubleshooting
+
+| Message | Cause | Fix |
+| --- | --- | --- |
+| `HTTP 405` | The Node half's route is not mounted (plugin not loaded, or a callback-style `ctx.inject` was used), so the POST fell through to the SPA fallback | Make sure `dsh-quick-restart` is in both `dsh.profile.bundles` and `dependencies`, and that `node_modules/dsh-quick-restart` resolves; register with a module-level `inject` plus `ctx.effect` |
+| `HTTP 503` | **Not the plugin**: the desktop shell is downloading or installing an update, and `dsh-desktop-host`'s update admission lock answers every request with a bare 503 before routing | Wait for the update to finish. Since v0.3.1 the client backs off and retries (up to 6 attempts) and says so in the dialog |
+
 ## Interactive diagram
 
 [docs/dsh-quick-restart-architecture.html](docs/dsh-quick-restart-architecture.html) is a standalone swimlane walk-through of the whole restart path (no network needed).
