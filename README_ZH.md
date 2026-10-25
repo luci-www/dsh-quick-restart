@@ -87,6 +87,13 @@ HTTP 接口（POST）：
 - `/quick-restart/api/status` — 状态（exe 路径、helper 是否存在等）
 - `/quick-restart/api/logs` — 上述日志的尾部
 
+### 报错对照
+
+| 提示 | 原因 | 处理 |
+|---|---|---|
+| `HTTP 405` | Node 半进程的路由没挂上（插件未被加载，或用了回调式 `ctx.inject` 写法），请求落到 SPA fallback | 确认 `dsh.profile.bundles` 与 `dependencies` 里都有 `dsh-quick-restart`，且 `node_modules/dsh-quick-restart` 可解析；改为模块级 `inject` + `ctx.effect` 注册 |
+| `HTTP 503` | **不是插件的问题**：桌面端正在下载/安装更新，`dsh-desktop-host` 的更新准入锁会给所有请求回裸 503，插件的路由根本没收到请求 | 等更新完成再点；v0.3.1 起客户端会自动退避重试（最多 6 次），并在对话框里显示「应用正在准备更新」 |
+
 ## 已知限制
 
 - 仅支持 Windows（强杀/重启逻辑依赖 `taskkill`、WMI 与 Job Object 语义）。
