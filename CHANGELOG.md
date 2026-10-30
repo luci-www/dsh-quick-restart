@@ -5,6 +5,46 @@ file — see the git history. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are plain semver and
 there is no `Unreleased` section (work lands on a version bump).
 
+## 0.4.8 — 2026-10-30
+
+### Fixed
+
+- **The restart button went grey and stayed grey after the 0.2.1-rc.5 desktop
+  update.** Symptom: the panel said 「检测到待安装的更新 v0.2.1-rc.5」 and refused
+  to restart, while rc.5 was in fact *already installed*. Two independent bugs
+  stacked:
+
+  1. `readAppVersion()` computes where the asar data section starts as
+     `16 + headerSize` rounded up to the next 8-byte boundary. That padding is
+     written into the archive by the packer and is **not** always the remainder
+     of `headerSize`: rc.3 shipped an 8-aligned header, so the old formula was
+     accidentally right, while rc.5's header is `headerSize % 8 === 4` and its
+     data section starts at exactly `16 + headerSize`. The plugin then read 4
+     bytes past the start of `package.json`, `JSON.parse` failed, and the version
+     came back `null` — silently. It now probes the documented spellings
+     (`16 + headerSize`, `8 + pickleLength`) plus a ±8 neighbourhood and takes
+     the first base that yields a real version, so the next asar layout change
+     degrades to "still correct" instead of "null".
+  2. `pendingUpdate().stale` was a boolean, so an unknown installed version
+     collapsed into `stale: false` — i.e. "a newer build is waiting" — and the
+     guard answered 409 forever. `stale` is now tri-state: `true` = leftover
+     marker, `false` = really newer, `null` = could not compare. Only `false`
+     blocks a restart; `null` warns in the panel and in the host log and lets
+     the restart through. A version we cannot read must never be able to brick
+     the button.
+
+  Verified against the live archive: `readAppVersion → 0.2.1-rc.5`,
+  `pendingUpdate → {version: "0.2.1-rc.5", currentVersion: "0.2.1-rc.5",
+  stale: true}`, so the leftover marker is now correctly ignored.
+
+### Changed
+
+- `CLIENT_VERSION` `13` → `14` (visible in the host log as
+  `restart requested client=14`).
+- The panel grew a second, softer warning for the `stale === null` case, which
+  explains that the pending marker could not be compared instead of pretending
+  the update is pending.
+
 ## 0.4.7 — 2026-10-25
 
 ### Fixed

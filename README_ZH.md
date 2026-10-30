@@ -45,6 +45,8 @@ v0.4 在三层都加了保护，插件不会再 sabotage 升级：
 
 > **v0.4.3 修正**：读 `app.asar` 时 Host 运行在 `ELECTRON_RUN_AS_NODE=1` 下，Electron 的 fs 补丁会把任何 `*.asar` 当成「压缩包里的目录」，`openSync(app.asar, "r")` 直接抛 `ENOENT, not found in …app.asar` —— 于是版本号读成 `null`，守卫又变得保守（继续 409）。现在读取期间临时设 `process.noAsar = true` 绕过该补丁，并在真实 Host 运行时下验证：`currentVersion = 0.2.1-rc.3`、`stale = true`、重启返回 200。
 
+> **v0.4.8 修正**：`readAppVersion()` 原先假定 asar 数据区起点是 `16 + headerSize` 再向上取整到 8 字节边界。这个补齐字节是打包器写进归档的，**不一定**等于 `headerSize % 8` 的余数：rc.3 的 header 恰好 8 对齐所以旧公式碰巧正确，rc.5 的 header 余 4、数据区却正好起于 `16 + headerSize`，于是每次读都偏 4 字节、`JSON.parse` 失败、版本号静默变成 `null`。现在按 `16 + headerSize`、`8 + pickle 长度` 等候选基点各试 ±8 邻域，取第一个能解析出版本号的偏移。同时把 `pendingUpdate().stale` 改成三态：`true` = 残留标记、`false` = 确实更新、`null` = 读不到已安装版本。只有 `false` 会拦截重启，`null` 只在面板和日志里警告——读不到的版本号不能有本事把按钮永久按死。
+
 需要强制绕过时（不推荐）：`POST /quick-restart/api/restart`，body 传 `{"force":true}`。
 
 ## 安装

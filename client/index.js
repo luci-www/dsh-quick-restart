@@ -38,7 +38,7 @@ window.__ModuleLoader__.load({
 		 * with every restart request and lands in the host's spawn log, so that log
 		 * alone answers "which client bundle is the page really running?".
 		 */
-		const CLIENT_VERSION = "13";
+		const CLIENT_VERSION = "14";
 		/** If the app is still alive this long after arming, say so. */
 		const STUCK_AFTER_MS = 20000;
 		/** 409 "update-pending" is terminal for this attempt: never retried. */
@@ -633,9 +633,13 @@ window.__ModuleLoader__.load({
 			}, [refresh]);
 
 			// A leftover marker for the ALREADY installed build (electron-updater
-			// never cleans it up) must not disable the button.
+			// never cleans it up) must not disable the button. `stale === false`
+			// means the marker really describes a newer build; `stale === null`
+			// means the installed version could not be read, which must warn but
+			// never veto (that failure mode once greyed the button out for days).
 			const pending = status && status.pendingUpdate ? status.pendingUpdate : null;
-			const blocking = pending !== null && pending.stale !== true ? pending : null;
+			const blocking = pending !== null && pending.stale === false ? pending : null;
+			const unsure = pending !== null && pending.stale === null ? pending : null;
 			const canRestart = blocking === null;
 
 			/** The panel never restarts on its own: it opens the shared confirmation
@@ -669,7 +673,20 @@ window.__ModuleLoader__.load({
 									"。请用官方「立即安装并重启」完成升级 —— 强制重启走不到更新安装流程，会导致升级装不上。",
 							),
 						)
-					: null,
+					: unsure !== null
+						? React.createElement(
+								"div",
+								{ className: "dshQrWarn" },
+								React.createElement(RestartIcon, { size: 14 }),
+								React.createElement(
+									"span",
+									null,
+									"有一个更新标记" +
+										(unsure.version ? "（v" + unsure.version + "）" : "") +
+										"，但读不到当前已安装的版本，无法判断它是否已装过。重启仍可继续；如果它确实更新，请改用官方「立即安装并重启」。",
+								),
+							)
+						: null,
 				React.createElement(
 					"div",
 					{ className: "dshQrCard" },

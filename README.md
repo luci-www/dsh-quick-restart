@@ -45,6 +45,8 @@ v0.4 guards all three layers:
 
 > **Fixed in v0.4.2**: `electron-updater` never deletes `pending\update-info.json` after a successful install, so "marker present" does not mean "update waiting". v0.4.0/v0.4.1 answered 409 on the bare file and left the button greyed out forever after an upgrade. The guard is now version-aware: `pending ≤ installed` is treated as a leftover (`status.pendingUpdate.stale === true`) and the restart is allowed.
 
+> **Fixed in v0.4.8**: the button went permanently grey after the 0.2.1-rc.5 update even though rc.5 was already installed. `readAppVersion()` assumed the asar data section starts at `16 + headerSize` rounded up to an 8-byte boundary, but that padding belongs to the packer: rc.3's header happened to be 8-aligned (so the formula was accidentally right) while rc.5's is `headerSize % 8 === 4` and its data still starts at exactly `16 + headerSize`. Every read was 4 bytes off, `JSON.parse` failed, and the version silently became `null`. The reader now probes `16 + headerSize`, `8 + pickleLength` and a ±8 neighbourhood, taking the first base that yields a real version. `stale` also became tri-state — `true` leftover, `false` genuinely newer, `null` could-not-compare — and only `false` blocks a restart; `null` warns in the panel and the host log. A version we cannot read must never be able to brick the button.
+
 Opt out (not recommended): `POST /quick-restart/api/restart` with `{"force":true}`.
 
 ## Finishing the Host's shutdown (v0.4.1)
